@@ -1,0 +1,326 @@
+# Reusable: builds a package's native library on every reference host, fails
+# if any host differs by a byte or if the result differs from the committed
+# dnix.lock, and, on the default branch, publishes the release the lock
+# names when it does not exist yet. A package calls it like this:
+#
+#   on:
+#     push:
+#       branches: [main]   # the default branch
+#     pull_request:
+#   permissions:
+#     contents: write
+#   concurrency:
+#     group: native-${{ github.ref }}
+#     # Never cancel a run on the default branch: it may be publishing.
+#     cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+#   jobs:
+#     native:
+#       uses: cypherstack/dnix/.github/workflows/native.yml@<commit>   # the commit pubspec.yaml pins
+name: Native library
+
+on:
+  workflow_call:
+    inputs:
+      macos-runner:
+        description: Runner label with the pinned Xcode installed
+        type: string
+        default: xcode-27
+      package-dir:
+        description: Directory holding dnix.json and dnix.lock
+        type: string
+        default: .
+      flake-dir:
+        description: Directory holding the flake; defaults to package-dir
+        type: string
+        default: ''
+      attr-prefix:
+        description: Prefix of the flake attributes (dnix's own fixture uses one)
+        type: string
+        default: ''
+      artifact-suffix:
+        description: Appended to artifact names; set when one run calls this workflow more than once
+        type: string
+        default: ''
+      dart-sdk:
+        description: Dart SDK version for the lock tools
+        type: string
+        default: '3.13.0'
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux x86_64 host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - name: Build every target this host can build
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+      - name: Rebuild each target from scratch and compare
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: |
+          for dir in result/*/; do
+            [ -d "$dir" ] || continue  # no sandboxed targets at all
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+          done
+      - name: Collect outputs
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: mkdir -p out && cp -RL result/. out/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sums-linux-x86_64${{ inputs.artifact-suffix }}
+          path: ${{ inputs.flake-dir || inputs.package-dir }}/out
+          retention-days: 7
+
+  linux-arm64:
+    name: Linux aarch64 host
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - name: Build every target this host can build
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+      - name: Rebuild each target from scratch and compare
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: |
+          for dir in result/*/; do
+            [ -d "$dir" ] || continue  # no sandboxed targets at all
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+          done
+      - name: Collect outputs
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: mkdir -p out && cp -RL result/. out/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sums-linux-aarch64${{ inputs.artifact-suffix }}
+          path: ${{ inputs.flake-dir || inputs.package-dir }}/out
+          retention-days: 7
+
+  macos:
+    name: macOS host
+    runs-on: ${{ inputs.macos-runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - name: Build every sandboxed target
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+      - name: Rebuild each target from scratch and compare
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: |
+          for dir in result/*/; do
+            [ -d "$dir" ] || continue  # no sandboxed targets at all
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+          done
+      - name: Collect outputs
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: mkdir -p out && cp -RL result/. out/
+      # dnix-apple-build finds the pinned Xcode among the installed bundles.
+      # Apple targets have no sandbox and no second host, so they are built
+      # twice here and the two builds must agree.
+      - name: Build the Apple targets with the pinned Xcode, twice, and compare
+        working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        run: |
+          nix develop '.#${{ inputs.attr-prefix }}apple' --command dnix-apple-build "$PWD/out"
+          nix develop '.#${{ inputs.attr-prefix }}apple' --command dnix-apple-build "$PWD/out-again"
+          diff out/SHA256SUMS.apple out-again/SHA256SUMS.apple
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sums-macos-arm64${{ inputs.artifact-suffix }}
+          path: ${{ inputs.flake-dir || inputs.package-dir }}/out
+          retention-days: 7
+
+  windows:
+    name: Windows host (WSL2)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-conf: |
+            [boot]
+            systemd=true
+          additional-packages: curl xz-utils git ca-certificates
+      - name: Install Nix inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          # Pinned, like the action the other hosts use; bump both together.
+          curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix/tag/v3.11.2 \
+            | sh -s -- install linux --no-confirm
+      - name: Build on the Linux file system inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          workspace=$(wslpath -u '${{ github.workspace }}')
+          # Clone rather than copy: a copy would carry the Windows checkout's
+          # line endings and permissions onto the Linux file system.
+          rm -rf ~/checkout
+          git clone -q "$workspace" ~/checkout
+          cd ~/checkout/'${{ inputs.flake-dir || inputs.package-dir }}'
+          nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+          for dir in result/*/; do
+            [ -d "$dir" ] || continue  # no sandboxed targets at all
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+          done
+          mkdir -p "$workspace/out"
+          cp -RL result/. "$workspace/out/"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sums-windows-wsl2${{ inputs.artifact-suffix }}
+          path: out
+          retention-days: 7
+
+  check:
+    name: Compare hosts and the lock
+    needs: [linux, linux-arm64, macos, windows]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      release: ${{ steps.lock.outputs.release }}
+    steps:
+      # Without every host there is nothing to compare the lock against, and
+      # a lock written from the remaining hosts would be incomplete.
+      - name: Every host must have built
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | select(.value.result != "success")
+            | "::error::The \(.key) host job \(.value.result). Fix that first; the lock is checked only when every host built."' <<< "$RESULTS"
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # dnix's own tools, at the revision of this workflow file. The github
+      # context belongs to the calling run; the job context names the
+      # repository and commit the reusable workflow came from.
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .dnix
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          # Exactly this call's four artifacts, whatever else the run holds.
+          pattern: sums-{linux-x86_64,linux-aarch64,macos-arm64,windows-wsl2}${{ inputs.artifact-suffix }}
+          path: artifacts
+      - name: Show what was downloaded
+        run: find artifacts -maxdepth 3 | sort
+      - name: Every target built on more than one host must match
+        run: .dnix/tool/compare_sums.sh artifacts
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ inputs.dart-sdk }}
+      - name: The committed dnix.lock must be what the source builds to
+        id: lock
+        run: |
+          (cd .dnix && dart pub get --no-example)
+          lock='${{ inputs.package-dir }}/dnix.lock'
+          committed=$(mktemp)
+          [ -e "$lock" ] && cp "$lock" "$committed" || : > "$committed"
+          # Plain `dart`, not `dart run`: the latter would run the package's build hook.
+          dart .dnix/tool/write_lock.dart '${{ inputs.package-dir }}' artifacts/*/SHA256SUMS*
+          if [ ! -s "$committed" ]; then
+            echo "::error::No dnix.lock is committed. The source builds to the lock below; commit it as $lock."
+            { echo '### Commit this as `'"$lock"'`'; echo '```json'; cat "$lock"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            cat "$lock"
+            exit 1
+          fi
+          if ! cmp -s "$committed" "$lock"; then
+            echo "::error::$lock does not match what the source builds to. Update it with dart tool/update_lock.dart, or replace it with the lock below."
+            { echo '### Replace `'"$lock"'` with'; echo '```json'; cat "$lock"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            diff "$committed" "$lock" || true
+            exit 1
+          fi
+          echo "dnix.lock matches the build: release native-$(jq -r .release "$lock")"
+          echo "release=$(jq -r .release "$lock")" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish the release the lock names
+    needs: check
+    # Only from the default branch, and only once per set of bytes.
+    if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sums-{linux-x86_64,linux-aarch64,macos-arm64,windows-wsl2}${{ inputs.artifact-suffix }}
+          path: artifacts
+      - name: Publish unless it already exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: native-${{ needs.check.outputs.release }}
+        run: |
+          # Only a published release counts; this endpoint does not see drafts.
+          # Anything but a clean 404 is no answer, so stop rather than guess.
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .html_url 2>&1); then
+            echo "$TAG is already published: $existing"
+            exit 0
+          elif ! grep -q "HTTP 404" <<<"$existing"; then
+            echo "::error::Could not check whether $TAG is published: $existing"
+            exit 1
+          fi
+          # `gh release create` uploads into a draft and publishes it last, so
+          # a run cancelled midway leaves a draft behind. Replace it.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id" \
+            | while read -r id; do
+              echo "Removing a draft of $TAG that an earlier run left behind."
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+            done
+          # The hosts agree, so take each dynamic library from whichever
+          # host built it; a second copy must be identical, and every copy
+          # must still hash to what its host recorded.
+          mkdir -p release
+          for lib in artifacts/*/*/*.so artifacts/*/*/*.dll artifacts/*/*/*.dylib; do
+            [ -e "$lib" ] || continue
+            host=$(basename "$(dirname "$(dirname "$lib")")")
+            target=$(basename "$(dirname "$lib")")
+            file=$(basename "$lib")
+            recorded=$(cat "artifacts/$host"/SHA256SUMS* | awk -v p="./$target/$file" '$2 == p { print $1 }')
+            actual=$(sha256sum "$lib" | cut -d' ' -f1)
+            if [ "$recorded" != "$actual" ]; then
+              echo "::error::$host/$target/$file hashes to $actual, not the $recorded its host recorded."
+              exit 1
+            fi
+            name="$target-$file"
+            if [ -e "release/$name" ]; then
+              cmp "release/$name" "$lib" || { echo "$name differs between hosts" >&2; exit 1; }
+            else
+              cp "$lib" "release/$name"
+            fi
+          done
+          if [ -z "$(ls release)" ]; then
+            echo "::error::No libraries to publish; this run's artifacts may have expired. Re-run the whole workflow."
+            exit 1
+          fi
+          (cd release && sha256sum -- * > SHA256SUMS)
+          ls -la release
+          # Not the repository's "latest" release: that is for versions.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --latest=false \
+            --notes "Native libraries built reproducibly from $GITHUB_SHA, as recorded in its dnix.lock. Rebuild one platform and compare with: dart tool/verify_release.dart <platform>" \
+            release/*

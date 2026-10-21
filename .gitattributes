@@ -1,0 +1,2 @@
+# Scripts run inside WSL2 on Windows CI; a CRLF checkout would break them.
+* -text

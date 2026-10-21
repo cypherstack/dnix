@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Never cancel a run on main: it may be publishing the fixture's release.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# The fixture's release is published from main like any consumer's.
+permissions:
+  contents: write
+
+jobs:
+  dart:
+    name: Dart package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.13.0'
+      - run: dart pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: dart analyze --fatal-infos
+      - run: dart test
+
+  # The fixture crate goes through the same reusable workflow consumers use.
+  fixture:
+    name: Fixture
+    uses: ./.github/workflows/native.yml
+    with:
+      package-dir: fixtures/rust
+      flake-dir: .
+      attr-prefix: fixture-

@@ -1,0 +1,16 @@
+[package]
+name = "dnix_fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+debug = false
+strip = "debuginfo"
+incremental = false

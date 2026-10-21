@@ -1,0 +1,5 @@
+.dart_tool/
+pubspec.lock
+/result*
+/fixtures/*/result*
+.dnix-build
