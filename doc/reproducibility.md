@@ -36,8 +36,10 @@ Three details make the output independent of the host that builds it:
 - **The C compiler.** nixpkgs' clang is a separate build per host platform
   and emitted different code on each. Linux and Windows targets compile C
   with zig's bundled clang instead, whose output is the same everywhere;
-  Android uses the NDK's clang with debug info and compiler identification
-  off, which is where its host dependence lived.
+  on Windows it runs as clang-cl, since build scripts that target the MSVC
+  ABI assume cl.exe's flag syntax. Android uses the NDK's clang with debug
+  info and compiler identification off, which is where its host dependence
+  lived.
 - **The NDK's crt objects.** Google compiles each NDK host package's
   `crtbegin` objects with that package's own clang, and the darwin and Linux
   packages differ. Every host links the Linux package's objects.

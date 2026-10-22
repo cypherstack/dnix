@@ -118,11 +118,12 @@ let
         rustflags=()
         # Flags that name directories go to the compiler wrappers, not into
         # CFLAGS, so a build that records its C flags records nothing
-        # host-specific; see cc-wrapper.sh.
+        # host-specific; see cc-wrapper.sh. They are spelled as the
+        # target's compiler takes them.
         ccargs=()
         for remap in "''${remaps[@]}"; do
           rustflags+=("--remap-path-prefix=$remap")
-          ccargs+=("-ffile-prefix-map=$remap")
+          ccargs+=("${t.prefixMapFlag}$remap")
         done
         for arg in ${lib.escapeShellArgs t.ldflags}; do
           rustflags+=("-Clink-arg=$arg")
@@ -131,7 +132,7 @@ let
           rustflags+=("-Lnative=$dir")
         done
         for dir in "''${dnix_include_dirs[@]}"; do
-          ccargs+=(-isystem "$dir")
+          ccargs+=("${t.includeFlag}$dir")
         done
         export DNIX_BUILD_ROOT=$TMPDIR
         export DNIX_CC_ARGS=$(printf '%s\n' "''${ccargs[@]}")
@@ -159,14 +160,16 @@ let
         # makes from env!("CARGO_MANIFEST_DIR") or env!("OUT_DIR"); those
         # would differ per host, so fail here rather than drift. The Linux
         # sandbox's /build is the canonical form, so only another build
-        # directory can tell host-specific strings apart.
+        # directory can tell host-specific strings apart. The dynamic
+        # library is what ships and what the lock records; the static one
+        # beside it keeps its objects' CodeView records, which on Windows
+        # name the object's path when a crate compiles its C with -g.
         if [ "$TMPDIR" != /build ]; then
-          for file in "$out"/lib/*; do
-            if grep -a -q -F -e "$PWD" -e "$TMPDIR/target" -e "$TMPDIR/vendor" "$file"; then
-              echo "$file embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
-              exit 1
-            fi
-          done
+          file=$out/lib/${builtins.head outputs}
+          if grep -a -q -F -e "$PWD" -e "$TMPDIR/target" -e "$TMPDIR/vendor" "$file"; then
+            echo "$file embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
+            exit 1
+          fi
         fi
         runHook postInstall
       '';

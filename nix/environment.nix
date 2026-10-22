@@ -5,10 +5,12 @@
 #
 # Every target set has: cc, cxx, ar, ranlib, linker (names of wrappers that `tools`
 # puts on PATH; see cc-wrapper.sh for why names rather than paths), cflags
-# and ldflags (lists of host-independent flags), tools (nativeBuildInputs),
-# and prepare (bash run before the build, which may append to the arrays
-# dnix_cflags, dnix_include_dirs, and dnix_lib_dirs). Linux targets add
-# zigTarget, the zig triple with the glibc floor.
+# and ldflags (lists of host-independent flags), includeFlag and
+# prefixMapFlag (how the compiler spells a system include directory and a
+# path remap, since clang-cl spells them differently), tools
+# (nativeBuildInputs), and prepare (bash run before the build, which may
+# append to the arrays dnix_cflags, dnix_include_dirs, and dnix_lib_dirs).
+# Linux targets add zigTarget, the zig triple with the glibc floor.
 { pkgs, zig, settings }:
 let
   inherit (pkgs) lib stdenvNoCC;
@@ -142,19 +144,53 @@ let
         splat --disable-symlinks --copy --output "$out"
     '';
   };
-  # zig's clang targeting the MSVC ABI. The cc crate passes --target for
-  # its own notion of the triple; zig's -target wins, so drop it.
-  windowsCc = name: wrapZig name "cc -target x86_64-windows-msvc";
-  # clang emits an S_OBJNAME CodeView record holding the object's absolute
-  # path even with debug info off, and the build directory differs between
-  # Linux and macOS sandboxes. This archiver strips the CodeView sections
-  # before archiving.
-  windowsArchiver = target: pkgs.writeShellScriptBin (arName target) ''
+  # zig's clang in its cl driver mode. Build scripts that target the MSVC
+  # ABI assume cl.exe's syntax (ring 0.16 passes /GS and names its output
+  # with /Fo), and the cc crate drives a compiler called clang-cl that way
+  # too, so the compiler has to take cl's flags as well as clang's; the
+  # name tells the cc crate which driver it is. zig keeps clang's builtin
+  # headers under lib/include, where a resource directory of lib has them.
+  # C++ exceptions are on, as in a Visual Studio project: cl.exe compiles
+  # a `throw` without them and warns, clang-cl refuses (bitcoinconsensus
+  # throws). A flag from the build script comes later and wins.
+  windowsCcName = target: "dnix-clang-cl-${target}";
+  windowsCc = target: wrap (windowsCcName target)
+    "${zig}/bin/zig clang --driver-mode=cl --target=x86_64-pc-windows-msvc -resource-dir ${zig}/lib /EHsc";
+  # Two conventions reach the archiver: ar's (`cq archive objects`, from
+  # the cc crate when the archiver's name says llvm-ar) and lib.exe's
+  # (`-out:archive objects`, from cc crates before 1.0.9x on any MSVC
+  # target, and from the old gcc crate, which runs whatever `lib.exe` is on
+  # PATH, so the same script is installed under that name too). Both
+  # produce a GNU-format archive of base names. The objects keep their
+  # CodeView sections: the linker drops them without a PDB, and removing
+  # them would renumber the symbols that the address-significance table
+  # refers to, which the linker then rejects.
+  windowsArchiver = target: windowsArchiverNamed (arName target);
+  windowsLib = windowsArchiverNamed "lib.exe";
+  windowsArchiverNamed = name: pkgs.writeShellScriptBin name ''
+    lib=
     for arg in "$@"; do
-      case "$arg" in
-        *.o|*.obj) ${llvm.llvm}/bin/llvm-objcopy --remove-section '.debug$S' --remove-section '.debug$T' "$arg" ;;
-      esac
+      case "$arg" in -out:*|/out:*|-OUT:*|/OUT:*) lib=1 ;; esac
     done
+    if [ -n "$lib" ]; then
+      out=
+      objects=()
+      for arg in "$@"; do
+        case "$arg" in
+          -out:*|/out:*|-OUT:*|/OUT:*) out=''${arg#*:} ;;
+          # lib.exe options (/nologo, CMake's /machine:x64) look like
+          # absolute paths; an object is a path that exists.
+          /[A-Za-z]*|-[A-Za-z]*) if [ -e "$arg" ]; then objects+=("$arg"); fi ;;
+          *) objects+=("$arg") ;;
+        esac
+      done
+      # lib.exe takes the archive it extends as an input; ar appends to it.
+      inputs=()
+      for arg in "''${objects[@]}"; do
+        if [ "$arg" != "$out" ]; then inputs+=("$arg"); fi
+      done
+      set -- qcs "$out" "''${inputs[@]}"
+    fi
     exec ${llvm.llvm}/bin/llvm-ar --format=gnu "$@"
   '';
   windowsRanlib = target: wrapTool (ranlibName target) "${llvm.llvm}/bin/llvm-ar --format=gnu s";
@@ -166,7 +202,7 @@ let
   # Build an overlay next to the SDK with every lowercase name plus every
   # casing an #include directive uses, and search both. The overlay is
   # derived purely from the SDK contents.
-  windowsPrepare = ''
+  windowsPrepare = target: ''
     sdk=${xwinSdk}
     overlay=$TMPDIR/xwin-overlay
     include_dirs="${toString windowsIncludeDirs}"
@@ -205,6 +241,30 @@ let
     for dir in $lib_dirs; do
       dnix_lib_dirs+=("$sdk/$dir" "$overlay/$dir")
     done
+    # CMake builds (the cmake crate) get a toolchain file naming the
+    # platform, the same clang-cl, and LLVM's stand-ins for Microsoft's
+    # tools, as cargo-zigbuild gives Linux builds one. Compile tests link
+    # nothing, so no project has to find a C runtime on its own.
+    export CMAKE_GENERATOR=Ninja
+    export CMAKE_TOOLCHAIN_FILE=$TMPDIR/dnix-windows.cmake
+    libpaths=
+    for dir in "''${dnix_lib_dirs[@]}"; do libpaths="$libpaths /libpath:$dir"; done
+    cat > "$CMAKE_TOOLCHAIN_FILE" <<EOF
+    set(CMAKE_SYSTEM_NAME Windows)
+    set(CMAKE_SYSTEM_PROCESSOR AMD64)
+    set(CMAKE_C_COMPILER $(command -v ${windowsCcName target}))
+    set(CMAKE_CXX_COMPILER $(command -v ${windowsCcName target}))
+    set(CMAKE_ASM_MASM_COMPILER $(command -v llvm-ml))
+    set(CMAKE_ASM_MASM_FLAGS_INIT -m64)
+    set(CMAKE_RC_COMPILER $(command -v llvm-rc))
+    set(CMAKE_MT $(command -v llvm-mt))
+    set(CMAKE_AR $(command -v lib.exe))
+    set(CMAKE_LINKER $(command -v lld-link))
+    set(CMAKE_EXE_LINKER_FLAGS_INIT "$libpaths")
+    set(CMAKE_SHARED_LINKER_FLAGS_INIT "$libpaths")
+    set(CMAKE_MODULE_LINKER_FLAGS_INIT "$libpaths")
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    EOF
   '';
 
   linuxTarget = target: {
@@ -215,6 +275,8 @@ let
     linker = ccName target;
     cflags = baseCflags;
     ldflags = [ ];
+    includeFlag = "-isystem";
+    prefixMapFlag = "-ffile-prefix-map=";
     tools = [ zig (zigCc target) (zigCxx target) (zigAr target) (zigRanlib target) ];
     prepare = "";
     zigTarget = zigTriple target;
@@ -228,6 +290,8 @@ let
     cflags = baseCflags;
     # -B makes clang take crtbegin_so.o and crtend_so.o from here first.
     ldflags = [ "-B${androidCrt}/${androidSysrootDir target}" ];
+    includeFlag = "-isystem";
+    prefixMapFlag = "-ffile-prefix-map=";
     tools = [ (androidCc target) (androidCxx target) (androidArchiver target) (androidRanlib target) ];
     # CMake-based build scripts find the NDK's toolchain file through these.
     prepare = ''
@@ -236,20 +300,24 @@ let
     '';
   };
   windowsTarget = target: {
-    cc = ccName target;
-    cxx = cxxName target;
+    cc = windowsCcName target;
+    cxx = windowsCcName target;
     ar = arName target;
     ranlib = ranlibName target;
     linker = "lld-link";
-    # clang's default for MSVC targets stamps a timestamp into every COFF
-    # object for incremental linking; the cc crate disables that for
-    # clang-cl with -Brepro but not for a GNU-style driver.
-    cflags = baseCflags ++ [ "-gno-codeview-command-line" "-mno-incremental-linker-compatible" ];
+    # No debug info is the cl driver's default (-g0 is not a cl flag). No
+    # compiler identification, and no timestamp in the COFF objects: clang
+    # stamps one for incremental linking unless told otherwise, which the
+    # cc crate does with -Brepro but a build script may not.
+    cflags = [ "-fno-ident" "-gno-codeview-command-line" "-mno-incremental-linker-compatible" ];
     # /Brepro derives the PE timestamp from the content. No PDB: its
     # content-derived GUID would otherwise land in the DLL.
     ldflags = [ "/Brepro" "/DEBUG:NONE" ];
-    tools = [ zig llvm.lld llvm.llvm (windowsCc (ccName target)) (windowsCc (cxxName target)) (windowsArchiver target) (windowsRanlib target) ];
-    prepare = windowsPrepare;
+    # clang-cl ignores -isystem and -ffile-prefix-map; these are its forms.
+    includeFlag = "/imsvc";
+    prefixMapFlag = "/clang:-ffile-prefix-map=";
+    tools = [ zig llvm.lld llvm.llvm pkgs.ninja (windowsCc target) (windowsArchiver target) windowsLib (windowsRanlib target) ];
+    prepare = windowsPrepare target;
   };
 in
 {

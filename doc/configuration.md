@@ -71,8 +71,14 @@ Changing any of them means a new lock and a new release.
 Build scripts and proc macros are fine. Paths inside the build are remapped
 to `/build`, `paths.workspace`, and the cargo registry prefix, so generated
 code carries no host paths, and C and C++ compiled by build scripts get the
-same flags. Build scripts see only the tools of the Nix build, or on a Mac
-Xcode's tools plus the flake's shell, never Homebrew or `~/.cargo/bin`.
+same flags. On Windows the compiler is clang-cl with C++ exceptions on, as
+in a Visual Studio project; it takes cl.exe's flags as well as clang's, so
+a build script written for either works, and `lib.exe` is on `PATH` for
+build scripts that run it by name. A CMake build on Windows (the `cmake`
+crate, with `cmake` in `rust.tools`) uses Ninja and a toolchain file that
+names the same compiler and LLVM's `llvm-ml`, `llvm-rc`, and `lld-link`.
+Build scripts see only the tools of the Nix build, or on a Mac Xcode's
+tools plus the flake's shell, never Homebrew or `~/.cargo/bin`.
 
 ## dnix.lock
 
