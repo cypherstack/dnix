@@ -1,0 +1,47 @@
+Keep rustc's export list on Windows GNU links
+
+rustc writes a cdylib's exported symbols to a module definition file and
+hands it to the linker as -Wl,<path>/list.def. cargo-zigbuild dropped it,
+so lld exported every global symbol and could strip nothing. zig takes a
+.def file as an input, so pass it that way instead. The last .def given
+wins, so a crate that links its own replaces rustc's, as lld-link's /DEF
+does on the MSVC targets.
+
+--- a/src/zig/linker_args.rs
++++ b/src/zig/linker_args.rs
+@@ -91,11 +91,15 @@
+             return FilteredArg::Keep(vec!["-Wl,-search_paths_first".to_owned()]);
+         } else if arg == "-lwindows" || arg == "-l:libpthread.a" || arg == "-lgcc" {
+             return FilteredArg::Skip;
++        } else if arg.starts_with("-Wl,")
++            && (arg.ends_with("/list.def") || arg.ends_with("\\list.def"))
++        {
++            // rustc's export list; zig takes a module definition file as an
++            // input rather than as a linker argument.
++            return FilteredArg::Keep(vec![arg["-Wl,".len()..].to_string()]);
+         } else if arg == "-Wl,--disable-auto-image-base"
+             || arg == "-Wl,--dynamicbase"
+             || arg == "-Wl,--large-address-aware"
+-            || (arg.starts_with("-Wl,")
+-                && (arg.ends_with("/list.def") || arg.ends_with("\\list.def")))
+         {
+             return FilteredArg::Skip;
+         } else if arg == "-lmsvcrt" {
+@@ -396,8 +400,6 @@
+             "-Wl,--disable-auto-image-base",
+             "-Wl,--dynamicbase",
+             "-Wl,--large-address-aware",
+-            "-Wl,/path/to/list.def",
+-            "-Wl,C:\\path\\to\\list.def",
+             "-lmsvcrt",
+         ];
+         for arg in removed {
+@@ -408,6 +410,8 @@
+         let replaced: &[(&str, (u64, u64), &str)] = &[
+             ("-lgcc_eh", (13, 0), "-lc++"),
+             ("-Wl,-Bdynamic", (13, 0), "-Wl,-search_paths_first"),
++            ("-Wl,/path/to/list.def", (13, 0), "/path/to/list.def"),
++            ("-Wl,C:\\path\\to\\list.def", (13, 0), "C:\\path\\to\\list.def"),
+         ];
+         for (arg, zig_ver, expected) in replaced {
+             let result = run_filter_one(arg, gnu, *zig_ver);

@@ -1,17 +1,20 @@
 {
-  "release": "d773f95844b7",
-  "date": "2026-10-21",
+  "release": "0d32db5e068c",
+  "date": "2026-10-22",
   "files": {
     "aarch64-apple-darwin/libdnix_fixture.dylib": "ed4827546dee001b4431fcec34736cc1d0b0d433d2c4d89326c47153fea5adfb",
     "aarch64-apple-ios-sim/libdnix_fixture.dylib": "ea7c44ddd02a42320a81f9114c45f123fe8223b9d6f2d19e16bf5b0af035b131",
     "aarch64-apple-ios/libdnix_fixture.dylib": "18d5f218505665110c79d34edc8cbc2f15d11225341177a2190b69d9e7135d41",
     "aarch64-linux-android/libdnix_fixture.so": "ec0df871c859b61f8553598bdbcadf9b32b77fdcce531f8e8b8dda3b703ad940",
+    "aarch64-pc-windows-gnullvm/dnix_fixture.dll": "8b00978f4179bc74b2e94c88fe5f504ef089fc7e5c4e5da18882e21b63807b1f",
+    "aarch64-pc-windows-msvc/dnix_fixture.dll": "297ef7533d69b6cc80aab4cbe2f3aa234b3e288a831f91702eab7e71ad7bd6b9",
     "aarch64-unknown-linux-gnu/libdnix_fixture.so": "1106b05f2ce7e9df57390ae9e188810dec3e609ae38e5cca65096991aa0adee8",
     "armv7-linux-androideabi/libdnix_fixture.so": "ba55955e2bcc622fc501bf5e8df8b5a37d36a273f74b2c12a20a919948b8c422",
     "x86_64-apple-darwin/libdnix_fixture.dylib": "4f101fd181b90b344625f45432ceb5e021e6038f67b4022e63225e2a311742af",
     "x86_64-apple-ios/libdnix_fixture.dylib": "73272e53fbf7cf367992c20e0f78eae7ef64c28010e44de147781c00a3929a46",
     "x86_64-linux-android/libdnix_fixture.so": "5ecb3bff5044d44822e970005b16bc5948ce3def1194364ec83d0b3e213c9db9",
-    "x86_64-pc-windows-msvc/dnix_fixture.dll": "5b93ea9e178a2717ff396ae86466f906b1ad7d077bd56599fee415df755ed97d",
+    "x86_64-pc-windows-gnullvm/dnix_fixture.dll": "7834ea770c821c76dc3caf5b13efe035d0319c785c4c4443eff559c938f85f82",
+    "x86_64-pc-windows-msvc/dnix_fixture.dll": "7a9fa549076541945419bdee3643973bb1fcfb88073344de7ed4d3a681b4fbcb",
     "x86_64-unknown-linux-gnu/libdnix_fixture.so": "77be994a2b8235e1fa0deede83997ad658d31ce91ec47e7d9d5071846be6760a"
   }
 }

@@ -29,6 +29,9 @@ let
     "aarch64-unknown-linux-gnu"
     "x86_64-unknown-linux-gnu"
     "x86_64-pc-windows-msvc"
+    "x86_64-pc-windows-gnullvm"
+    "aarch64-pc-windows-msvc"
+    "aarch64-pc-windows-gnullvm"
   ];
 
   # dnix.json on top of the defaults.
@@ -36,7 +39,14 @@ let
     let
       user = builtins.fromJSON (builtins.readFile config);
       merged = lib.recursiveUpdate defaults user;
-      rust = { manifest = "Cargo.toml"; outputHashes = { }; } // (user.rust or { });
+      rust = { manifest = "Cargo.toml"; outputHashes = { }; cflags = { }; env = { }; tools = [ ]; } // (user.rust or { });
+      rustExtrasOk = builtins.isAttrs rust.cflags
+        && builtins.all (target: builtins.elem target user.targets) (builtins.attrNames rust.cflags)
+        && builtins.all (flags: builtins.isList flags && builtins.all builtins.isString flags) (builtins.attrValues rust.cflags)
+        && builtins.isAttrs rust.env
+        && builtins.all builtins.isString (builtins.attrValues rust.env)
+        && builtins.isList rust.tools
+        && builtins.all builtins.isString rust.tools;
       # Normalised the same way as the hook: no trailing slashes, no leading
       # ./, "." for the root; nothing absolute and nothing escaping the
       # package.
@@ -57,6 +67,8 @@ let
       "dnix.json needs rust.workspace (the directory holding Cargo.lock) and rust.crate (the cargo package to build)";
     assert lib.assertMsg workspaceOk
       "dnix.json: rust.workspace must be a directory inside the package, relative to its root, like src/native or \".\", not \"${given}\"";
+    assert lib.assertMsg rustExtrasOk
+      "dnix.json: rust.cflags must map a listed target to a list of strings, rust.env a variable to a string, and rust.tools must list nixpkgs package names";
     assert lib.assertMsg (merged.toolchains ? rust)
       "dnix.json needs toolchains.rust, the Rust version to build with";
     merged // {

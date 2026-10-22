@@ -7,7 +7,6 @@ let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   library = settings.library;
   paths = settings.paths;
-  floors = settings.floors;
   registryPath = "${paths.registry}/${paths.registryIndex}";
 
   workspaceRoot = if rust.workspace == "." then src else src + "/${rust.workspace}";
@@ -20,20 +19,52 @@ let
       path != toString workspaceRoot + "/target" && baseNameOf path != ".git";
   };
 
-  # Official Rust release with the standard library for every target.
+  # Official Rust release with the standard library for every target, and
+  # for the fixed host below: build scripts of host-side crates are told
+  # that is the host, and some (autocfg) compile a probe for it.
   rustToolchain = pkgs.rust-bin.stable.${settings.toolchains.rust}.minimal.override {
-    targets = env.pureTargets ++ lib.optionals isDarwin env.appleTargets;
+    targets = env.pureTargets ++ lib.optionals isDarwin env.appleTargets ++ [ fixedHost ];
   };
+  # zig's linker driver takes -Bdynamic and -Bstatic as orders where GNU
+  # ld takes them as preferences: told -Bdynamic by rustc ahead of a library
+  # a build script names without a kind, it refuses the archive that is all
+  # there is (randomx). The zig that links drops the two hints, which gives
+  # zig's default order back: a shared library when there is one, the
+  # archive otherwise, as ld does.
+  linkingZig = pkgs.writeShellScriptBin "zig" ''
+    if [ "''${1:-}" = cc ] || [ "''${1:-}" = c++ ]; then
+      args=()
+      for arg in "$@"; do
+        case "$arg" in -Wl,-Bdynamic|-Wl,-Bstatic) ;; *) args+=("$arg") ;; esac
+      done
+      exec ${zig}/bin/zig "''${args[@]}"
+    fi
+    exec ${zig}/bin/zig "$@"
+  '';
   # nixpkgs wraps cargo-zigbuild with its own zig on PATH; point it at the
-  # pinned official binary instead so the pin actually takes effect.
-  cargoZigbuild = pkgs.cargo-zigbuild.override { inherit zig; };
+  # pinned official binary instead so the pin actually takes effect. The
+  # patch keeps rustc's export list on Windows GNU links, which
+  # cargo-zigbuild drops: without it lld exports every global symbol of the
+  # DLL and can strip nothing, so the library is many times its size.
+  cargoZigbuild = (pkgs.cargo-zigbuild.override { zig = linkingZig; }).overrideAttrs (previous: {
+    patches = (previous.patches or [ ]) ++ [ ./cargo-zigbuild-export-list.patch ];
+  });
 
   # Every crate in Cargo.lock, fetched by the checksum recorded there, laid
   # out as <name>-<version> directories like a cargo registry.
+  # Git dependencies are fetched at the revision Cargo.lock records, so they
+  # need no hashes of their own; outputHashes remains for the odd case.
   vendor = pkgs.rustPlatform.importCargoLock {
     lockFile = workspaceSrc + "/Cargo.lock";
     outputHashes = rust.outputHashes;
+    allowBuiltinFetchGit = true;
   };
+
+  # Flags, variables, and tools the package adds, from dnix.json.
+  userCflags = target: rust.cflags.${target} or [ ];
+  userEnv = lib.concatStringsSep "\n" (lib.mapAttrsToList
+    (name: value: "export ${name}=${lib.escapeShellArg value}") rust.env);
+  userTools = map (name: pkgs.${name}) rust.tools;
 
   # Cargo mixes every dependency's metadata hash into a crate's own, and for
   # build scripts and proc macros, which are compiled for the host, that hash
@@ -56,8 +87,10 @@ let
 
   # The dynamic library first; the rest are copied when the crate builds them.
   outputsFor = target:
-    if lib.hasInfix "-windows-" target
+    if lib.hasSuffix "-windows-msvc" target
     then [ "${library}.dll" "${library}.dll.lib" "${library}.lib" ]
+    else if lib.hasInfix "-windows-" target
+    then [ "${library}.dll" "lib${library}.dll.a" "lib${library}.a" ]
     else [ "lib${library}.so" "lib${library}.a" ];
 
   # importCargoLock writes the cargo configuration that serves every crate
@@ -71,14 +104,17 @@ let
     let
       t = env.targets.${target};
       v = targetVariable target;
-      # Linux goes through cargo-zigbuild, which configures the compiler,
-      # archiver, and linker from the same zig itself.
+      # Linux and GNU Windows go through cargo-zigbuild, which configures
+      # the compiler, archiver, and linker from the same zig itself.
       viaZigbuild = t ? zigTarget;
       outputs = outputsFor target;
     in stdenvNoCC.mkDerivation ({
       name = "${name}-${target}";
       src = workspaceSrc;
-      nativeBuildInputs = [ rustToolchain ] ++ t.tools ++ lib.optionals viaZigbuild [ cargoZigbuild ];
+      # perl and make serve build scripts that configure C libraries the
+      # classic way (OpenSSL); they run the build, nothing of them is in it.
+      nativeBuildInputs = [ rustToolchain pkgs.perl pkgs.gnumake ] ++ t.tools ++ userTools
+        ++ lib.optionals viaZigbuild [ cargoZigbuild ];
       dontConfigure = true;
       # Fixup would strip and patch the outputs, changing their bytes.
       dontFixup = true;
@@ -102,10 +138,14 @@ let
         # reaches code that build scripts generate.
         remaps=("$TMPDIR=/build" "$PWD=${paths.workspace}" "$vendor=${registryPath}")
         rustflags=()
-        cflags=()
+        # Flags that name directories go to the compiler wrappers, not into
+        # CFLAGS, so a build that records its C flags records nothing
+        # host-specific; see cc-wrapper.sh. They are spelled as the
+        # target's compiler takes them.
+        ccargs=()
         for remap in "''${remaps[@]}"; do
           rustflags+=("--remap-path-prefix=$remap")
-          cflags+=("-ffile-prefix-map=$remap")
+          ccargs+=("${t.prefixMapFlag}$remap")
         done
         for arg in ${lib.escapeShellArgs t.ldflags}; do
           rustflags+=("-Clink-arg=$arg")
@@ -113,18 +153,21 @@ let
         for dir in "''${dnix_lib_dirs[@]}"; do
           rustflags+=("-Lnative=$dir")
         done
-        cflags+=(${lib.escapeShellArgs t.cflags} "''${dnix_cflags[@]}")
         for dir in "''${dnix_include_dirs[@]}"; do
-          cflags+=(-isystem "$dir")
+          ccargs+=("${t.includeFlag}$dir")
         done
+        export DNIX_BUILD_ROOT=$TMPDIR
+        export DNIX_CC_ARGS=$(printf '%s\n' "''${ccargs[@]}")
+        cflags=(${lib.escapeShellArgs t.cflags} "''${dnix_cflags[@]}" ${lib.escapeShellArgs (userCflags target)})
         export CARGO_ENCODED_RUSTFLAGS=$(IFS=$'\x1f'; printf '%s' "''${rustflags[*]}")
         # The cc crate reads CXXFLAGS for C++ sources, not CFLAGS.
         export CFLAGS_${v}="''${cflags[*]}" CXXFLAGS_${v}="''${cflags[*]}"
+        ${userEnv}
 
         cargo ${if viaZigbuild then "zigbuild" else "build"} \
           --locked --offline --release --lib --package ${rust.crate} \
           --manifest-path "$PWD/${rust.manifest}" \
-          --target ${if viaZigbuild then "${target}.${floors.glibc}" else target} \
+          --target ${t.cargoTarget or target} \
           --target-dir "$TMPDIR/target"
         runHook postBuild
       '';
@@ -137,19 +180,26 @@ let
         done
         # Remapping covers paths the compiler records, not strings a crate
         # makes from env!("CARGO_MANIFEST_DIR") or env!("OUT_DIR"); those
-        # would differ per host, so fail here rather than drift.
-        for file in "$out"/lib/*; do
+        # would differ per host, so fail here rather than drift. The Linux
+        # sandbox's /build is the canonical form, so only another build
+        # directory can tell host-specific strings apart. The dynamic
+        # library is what ships and what the lock records; the static one
+        # beside it is not checked here, though CI compares it across hosts.
+        if [ "$TMPDIR" != /build ]; then
+          file=$out/lib/${builtins.head outputs}
           if grep -a -q -F -e "$PWD" -e "$TMPDIR/target" -e "$TMPDIR/vendor" "$file"; then
             echo "$file embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
             exit 1
           fi
-        done
+        fi
         runHook postInstall
       '';
-    } // lib.optionalAttrs (!viaZigbuild) {
       "CC_${v}" = t.cc;
       "CXX_${v}" = t.cxx;
       "AR_${v}" = t.ar;
+      "RANLIB_${v}" = t.ranlib;
+    } // lib.optionalAttrs (!viaZigbuild) {
+      # cargo-zigbuild supplies the linker itself where it drives the build.
       "CARGO_TARGET_${lib.toUpper v}_LINKER" = t.linker;
     });
 
@@ -189,7 +239,7 @@ in
   } // lib.optionalAttrs isDarwin {
     # No C compiler from nixpkgs: Apple targets must link with Xcode's.
     apple = pkgs.mkShellNoCC {
-      packages = [ rustToolchain pkgs.jq appleBuild ];
+      packages = [ rustToolchain pkgs.jq appleBuild ] ++ userTools;
       # The same fixed host as the pure derivations, so crate metadata does
       # not depend on the Mac that builds.
       RUSTC_WRAPPER = rustcWrapper;
@@ -197,6 +247,7 @@ in
       DNIX_RUST = rustFile;
       DNIX_SRC = workspaceSrc;
       DNIX_VENDOR = vendor;
+      DNIX_CC_WRAPPER = ./cc-wrapper.sh;
     };
   };
 }

@@ -36,6 +36,9 @@ class DnixConfig {
     'crate',
     'manifest',
     'outputHashes',
+    'cflags',
+    'env',
+    'tools',
   };
   static const _knownFloors = {'macos', 'ios', 'android', 'glibc'};
 

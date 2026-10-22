@@ -61,13 +61,19 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
       - name: Build every target this host can build
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
-        run: nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+        shell: bash
+        # The tail of the log becomes an annotation, readable without a login.
+        run: |
+          nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result 2>&1 | tee build.log \
+            || { echo "::error::$(grep -v '^warning:' build.log | tail -c 1500 | tr '\n' ' ')"; exit 1; }
       - name: Rebuild each target from scratch and compare
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        shell: bash
         run: |
           for dir in result/*/; do
             [ -d "$dir" ] || continue  # no sandboxed targets at all
-            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L 2>&1 | tee rebuild.log \
+              || { echo "::error::$(grep -v '^warning:' rebuild.log | tail -c 1500 | tr '\n' ' ')"; exit 1; }
           done
       - name: Collect outputs
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
@@ -89,13 +95,19 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
       - name: Build every target this host can build
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
-        run: nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+        shell: bash
+        # The tail of the log becomes an annotation, readable without a login.
+        run: |
+          nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result 2>&1 | tee build.log \
+            || { echo "::error::$(grep -v '^warning:' build.log | tail -c 1500 | tr '\n' ' ')"; exit 1; }
       - name: Rebuild each target from scratch and compare
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        shell: bash
         run: |
           for dir in result/*/; do
             [ -d "$dir" ] || continue  # no sandboxed targets at all
-            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L 2>&1 | tee rebuild.log \
+              || { echo "::error::$(grep -v '^warning:' rebuild.log | tail -c 1500 | tr '\n' ' ')"; exit 1; }
           done
       - name: Collect outputs
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
@@ -117,13 +129,19 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v23
       - name: Build every sandboxed target
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
-        run: nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+        shell: bash
+        # The tail of the log becomes an annotation, readable without a login.
+        run: |
+          nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result 2>&1 | tee build.log \
+            || { echo "::error::$(grep -v '^warning:' build.log | tail -c 1500 | tr '\n' ' ')"; exit 1; }
       - name: Rebuild each target from scratch and compare
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
+        shell: bash
         run: |
           for dir in result/*/; do
             [ -d "$dir" ] || continue  # no sandboxed targets at all
-            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L 2>&1 | tee rebuild.log \
+              || { echo "::error::$(grep -v '^warning:' rebuild.log | tail -c 1500 | tr '\n' ' ')"; exit 1; }
           done
       - name: Collect outputs
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
@@ -175,10 +193,13 @@ jobs:
           rm -rf ~/checkout
           git clone -q "$workspace" ~/checkout
           cd ~/checkout/'${{ inputs.flake-dir || inputs.package-dir }}'
-          nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result
+          set -o pipefail
+          report() { echo "::error::$(grep -v '^warning:' "$1" | tail -c 1500 | tr '\n' ' ')"; exit 1; }
+          nix build '.#${{ inputs.attr-prefix }}all' -L --out-link result 2>&1 | tee build.log || report build.log
           for dir in result/*/; do
             [ -d "$dir" ] || continue  # no sandboxed targets at all
-            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L
+            nix build ".#${{ inputs.attr-prefix }}$(basename "$dir")" --rebuild --no-link -L 2>&1 | tee rebuild.log \
+              || report rebuild.log
           done
           mkdir -p "$workspace/out"
           cp -RL result/. "$workspace/out/"

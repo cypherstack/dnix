@@ -13,11 +13,14 @@ The facts about the package that both the hook and the Nix build read.
 | `rust.workspace` | Directory holding `Cargo.lock`, relative to the package root. `"."` for the root. |
 | `rust.crate` | The cargo package to build. |
 | `rust.manifest` | `Cargo.toml` to pass to cargo, relative to the workspace. Default `Cargo.toml`. |
-| `rust.outputHashes` | Hashes for git dependencies in the lock file, as nixpkgs' `importCargoLock` takes them: `{"<crate>-<version>": "sha256-…"}`. Put a wrong hash in first; the build fails and prints the right one. |
+| `rust.cflags` | Extra C and C++ flags per target, `{"<target>": ["-D…"]}`, appended to what dnix sets. For a `-sys` crate that needs a define on one platform. Every key must be a listed target, so flags do not go stale unnoticed when a target changes. |
+| `rust.env` | Extra environment variables for the build, `{"NAME": "value"}`, set for every target. For example `CXXSTDLIB_aarch64_linux_android: "static:-bundle=c++"` links the NDK's C++ runtime statically instead of shipping `libc++_shared.so`. Not for `CFLAGS`, `CXXFLAGS`, or `RUSTFLAGS`, which dnix composes itself. |
+| `rust.tools` | Extra tools build scripts run, as nixpkgs package names, like `["protobuf"]` for a crate that runs `protoc`. They are on `PATH` in the sandbox and in the Apple shell; `perl` and `make` are always there. Their output must not depend on the host, which holds for code generators. |
+| `rust.outputHashes` | Normally empty: git dependencies are fetched at the revision `Cargo.lock` records. Only a lock that names a git source without a full revision needs hashes here, as nixpkgs' `importCargoLock` takes them: `{"<crate>-<version>": "sha256-…"}`. |
 | `targets` | The target triples the package ships. See the list below. |
 | `toolchains.rust` | The Rust version to build with, a stable release like `"1.99.1"`. Required. |
 | `toolchains.xcode` | The Xcode version for Apple targets. Default `"27.0"`; must match the `macos-runner` the workflow uses. `toolchains.xcodeBuild` optionally pins the build number too, like `"27A266a"`, which tells a beta from the release. |
-| `toolchains.*` | Overrides for the other pins: `zig`, `llvm`, `ndk`, `xwin`, `ndkLinux`. Defaults live in `nix/defaults.nix`. |
+| `toolchains.*` | Overrides for the other pins: `zig`, `llvm`, `ndk`, `xwin`, `ndkLinux`. Defaults live in `nix/defaults.nix`. An MSVC Windows target fetches the SDK for x86_64 and arm64 together, whichever of the two it is for, so an `xwin` override gives the hash of a splat that holds both; the GNU Windows targets fetch no SDK. |
 | `floors` | Lowest supported `macos`, `ios`, `android` (API level) as integers, and `glibc` as a string. Defaults: 12, 15, 24, `"2.28"`. |
 | `paths` | Canonical path prefixes embedded instead of build directories: `workspace` (default `/<name>/<rust.workspace>`), `registry`, `registryIndex`. Defaults are fine. |
 
@@ -25,8 +28,40 @@ Supported targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `x86_64-apple-ios`,
 `aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`,
 `x86_64-linux-android`, `aarch64-unknown-linux-gnu`,
-`x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`. Anything else is
-rejected by both the hook and the flake.
+`x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`,
+`x86_64-pc-windows-gnullvm`, `aarch64-pc-windows-msvc`,
+`aarch64-pc-windows-gnullvm`. Anything else is rejected by both the hook
+and the flake.
+
+Windows comes in two ABIs per architecture. MSVC is what Rust and Flutter
+default to; GNU is MinGW-w64 in Rust's `-gnullvm` flavour, built as the
+LLVM toolchain builds it, which zig's is. (Rust's older
+`x86_64-pc-windows-gnu` assumes GCC's runtime and unwinder, and links far
+more of the standard library into a DLL.) List the one the package should
+ship, for each architecture it supports: Flutter asks for
+the arm64 triple when it builds for Windows on arm, and a package that
+lists none for an architecture fails there. The hook serves a Windows
+build from whichever ABI is listed, and from the MSVC one when both are.
+Listing both builds and publishes both, though no hook then asks for the
+GNU one; dnix's own fixture lists all four to prove them.
+
+What decides the choice is the C and C++ in the dependency tree; a crate
+without any takes MSVC, the default. On the MSVC targets C is compiled by
+clang-cl, which takes cl.exe's flags, with the Windows SDK in scope; a
+dependency that needs Microsoft's own compiler builds on neither ABI, and
+MASM assembly is assembled only in CMake builds on x86_64, through
+`llvm-ml` (the cc crate looks for `ml64.exe`, which is not there, and
+LLVM has no MASM assembler for arm64; GNU-syntax `.S` sources are fine
+everywhere). On the GNU targets C is compiled by zig's clang in its
+GCC-style driver with zig's MinGW-w64 headers, so GCC-style flags and
+MinGW conventions apply, `rust.cflags` for the target are spelled that
+way, and nothing of the SDK is in scope. What ships differs too: an MSVC
+DLL imports the Visual C++ runtime (`vcruntime140.dll`, and `msvcp140.dll`
+for C++), the redistributable a Flutter Windows application needs anyway;
+a GNU DLL links zig's runtime pieces statically and imports only system
+DLLs, at the cost of a larger file. Both allocate from the Universal C
+Runtime's heap, so an application loads either kind and may mix them
+across packages.
 
 The hook names the field for every mistake in the fields it reads, and
 rejects unknown fields so a typo cannot fall back to a default. The Nix
@@ -52,9 +87,14 @@ Changing any of them means a new lock and a new release.
   ```
 
 - A current `Cargo.lock` with every dependency: the build runs
-  `cargo --locked --offline`. Git dependencies need `rust.outputHashes`.
+  `cargo --locked --offline`. Git dependencies are fine; they are fetched
+  at the locked revision.
 - No `.cargo/config.toml` that changes codegen; the build sets its own
   flags and ignores configuration outside the workspace.
+- Build scripts that configure a C library the classic way, such as
+  `openssl-src`, work: `perl` and `make` are in the build, and the compiler
+  is invoked by a bare name so what such a library records about its build
+  is the same on every host.
 - No crate that turns `env!("CARGO_MANIFEST_DIR")` or `env!("OUT_DIR")`
   into a string in the library. Remapping covers the paths the compiler
   records, not those; the build fails if a build directory reaches the
@@ -63,8 +103,23 @@ Changing any of them means a new lock and a new release.
 Build scripts and proc macros are fine. Paths inside the build are remapped
 to `/build`, `paths.workspace`, and the cargo registry prefix, so generated
 code carries no host paths, and C and C++ compiled by build scripts get the
-same flags. Build scripts see only the tools of the Nix build, or on a Mac
-Xcode's tools plus the flake's shell, never Homebrew or `~/.cargo/bin`.
+same flags. On the MSVC Windows targets the compiler is clang-cl with C++
+exceptions on, as in a Visual Studio project; it takes cl.exe's flags as
+well as clang's, so a build script written for either works, and `lib.exe`
+is on `PATH` for build scripts that run it by name. On the GNU Windows
+targets it is zig's clang as on Linux, with zig's MinGW-w64 headers and
+runtime, and C++ gets zig's libc++ whether a build script asks for `c++`
+or `stdc++`. A CMake build on Windows (the `cmake` crate, with `cmake` in
+`rust.tools`) uses Ninja and a toolchain file that names the same compiler,
+`llvm-rc` for resources, and for MSVC LLVM's `llvm-ml` (x86_64 only) and
+`lld-link`. On the GNU targets the cmake crate names the C compiler as the
+resource compiler itself; the wrapper hands a resource script on to
+`llvm-rc`, preprocessed with the target's headers in scope. bindgen is
+told the clang spelling of the GNU triple through `BINDGEN_EXTRA_CLANG_ARGS`,
+since clang rejects `-gnullvm`; a package that sets that variable itself
+keeps the `--target` in it.
+Build scripts see only the tools of the Nix build, or on a Mac Xcode's
+tools plus the flake's shell, never Homebrew or `~/.cargo/bin`.
 
 ## dnix.lock
 
