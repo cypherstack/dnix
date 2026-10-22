@@ -19,11 +19,13 @@ rather than differing per host.
 Some C libraries record how they were built. OpenSSL keeps its compiler
 command line and its install directories in `libcrypto`, which would carry
 a store path that differs per host system and a build directory that
-differs per machine. So every compiler is a wrapper invoked by a bare name
-from `PATH`, the flags that name directories are added inside the wrapper
-rather than in `CFLAGS`, and a `-D` macro whose value mentions the build
-directory is rewritten to `/build`, the name the Linux sandbox gives it.
-What such a library records is then the same everywhere.
+differs per machine. So every compiler, archiver, and ranlib is a wrapper
+invoked by a bare name from `PATH`, the flags that name directories are
+added inside the compiler wrapper rather than in `CFLAGS`, and a `-D` macro
+whose value mentions the build directory is rewritten to `/build`, the name
+the Linux sandbox gives it. What such a library records is then the same
+everywhere, and no build can pick up the host's own `ranlib`, which on
+macOS would rewrite an archive in Darwin format.
 
 Three details make the output independent of the host that builds it:
 

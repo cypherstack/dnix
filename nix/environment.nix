@@ -55,13 +55,14 @@ let
 
   # zig's clang takes its target from -target; the cc crate's --target with
   # the Rust spelling of the triple would be rejected, so it is dropped.
-  wrapZig = name: zigArgs: pkgs.writeShellScriptBin name ''
+  wrapWithoutTarget = name: command: pkgs.writeShellScriptBin name ''
     args=()
     for arg in "$@"; do
       case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac
     done
-    exec ${./cc-wrapper.sh} ${zig}/bin/zig ${zigArgs} -- "''${args[@]}"
+    exec ${./cc-wrapper.sh} ${command} -- "''${args[@]}"
   '';
+  wrapZig = name: zigArgs: wrapWithoutTarget name "${zig}/bin/zig ${zigArgs}";
 
   # Linux: zig provides the C compiler, linker, and a glibc at the floor
   # version, so the result does not depend on the host's toolchain.
@@ -104,8 +105,11 @@ let
     builtins.replaceStrings [ "armv7-linux-androideabi" ] [ "arm-linux-androideabi" ] target;
   androidClang = target:
     "${ndkBin}/${builtins.replaceStrings [ "armv7-" ] [ "armv7a-" ] target}${toString floors.android}-clang";
-  androidCc = target: wrap (ccName target) (androidClang target);
-  androidCxx = target: wrap (cxxName target) "${androidClang target}++";
+  # The NDK's per-API driver sets --target with the API level; the cc
+  # crate's own --target without one would come later and win, which
+  # changes the API the headers assume. Drop the cc crate's.
+  androidCc = target: wrapWithoutTarget (ccName target) (androidClang target);
+  androidCxx = target: wrapWithoutTarget (cxxName target) "${androidClang target}++";
   # llvm-ar in GNU format.
   androidArchiver = target: wrapTool (arName target) "${llvm.llvm}/bin/llvm-ar --format=gnu";
   androidRanlib = target: wrapTool (ranlibName target) "${llvm.llvm}/bin/llvm-ar --format=gnu s";
