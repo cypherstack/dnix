@@ -1,3 +1,18 @@
+## Unreleased
+
+* Three more Windows targets beside `x86_64-pc-windows-msvc`:
+  `x86_64-pc-windows-gnullvm` and `aarch64-pc-windows-gnullvm` build with zig's
+  MinGW-w64 toolchain, for C and C++ dependencies that need GCC-style flags,
+  and `aarch64-pc-windows-msvc` with the SDK's arm64 libraries. A package
+  lists the ABI it ships per architecture; the hook serves a Windows build
+  from whichever is listed, and from the MSVC one when both are. The SDK is
+  now fetched for both architectures, so a `toolchains.xwin` override needs
+  the hash of such a splat.
+* `rust.cflags` keys must be listed targets; flags for a target the package
+  no longer builds are an error rather than silently ignored.
+* A CMake build on a Windows target can compile resource scripts: the
+  `llvm-rc` on its path has a clang for its preprocessing.
+
 ## 0.1.0
 
 * Initial release, extracted from frostdart: the build hook with its

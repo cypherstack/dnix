@@ -47,12 +47,14 @@ Future<void> _build(BuildInput input, BuildOutputBuilder output) async {
   final lock = DnixLock.load(root);
 
   final code = input.config.code;
-  final String target;
+  final iOSSdk = code.targetOS == OS.iOS ? code.iOS.targetSdk : null;
+  final String? target;
   try {
     target = targetTriple(
       code.targetOS,
       code.targetArchitecture,
-      iOSSdk: code.targetOS == OS.iOS ? code.iOS.targetSdk : null,
+      iOSSdk: iOSSdk,
+      targets: config.targets,
     );
   } on UnsupportedError {
     throw DnixException(
@@ -60,9 +62,17 @@ Future<void> _build(BuildInput input, BuildOutputBuilder output) async {
       '${code.targetArchitecture}.',
     );
   }
-  if (!config.targets.contains(target)) {
+  if (target == null) {
+    // Both Windows ABIs are named, so a package that ships the GNU one is
+    // not steered towards MSVC for the other architecture.
+    final candidates = targetTriples(
+      code.targetOS,
+      code.targetArchitecture,
+      iOSSdk: iOSSdk,
+    );
     throw DnixException(
-      '${config.name} does not provide a library for $target.',
+      '${config.name} does not provide a library for '
+      '${candidates.join(' or ')}.',
     );
   }
   // Only dynamic libraries are published and built; the reference set is
@@ -132,8 +142,11 @@ String pinnedHash(DnixLock lock, String target, String fileName) {
   final expected = lock.hashFor(target, fileName);
   if (expected == null) {
     throw DnixException(
-      'dnix.lock has no $fileName for $target. Build mode "dev" builds it '
-      'locally without a pinned hash.',
+      'dnix.lock has no $fileName for $target: the package was locked '
+      'without that target, and its maintainer adds it with update_lock. '
+      'Build mode "dev" builds it locally without a pinned hash, on Linux '
+      'or on an Apple Silicon Mac; a Windows process can only use a '
+      'prebuilt library.',
     );
   }
   return expected;

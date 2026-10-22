@@ -7,7 +7,6 @@ let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   library = settings.library;
   paths = settings.paths;
-  floors = settings.floors;
   registryPath = "${paths.registry}/${paths.registryIndex}";
 
   workspaceRoot = if rust.workspace == "." then src else src + "/${rust.workspace}";
@@ -43,8 +42,13 @@ let
     exec ${zig}/bin/zig "$@"
   '';
   # nixpkgs wraps cargo-zigbuild with its own zig on PATH; point it at the
-  # pinned official binary instead so the pin actually takes effect.
-  cargoZigbuild = pkgs.cargo-zigbuild.override { zig = linkingZig; };
+  # pinned official binary instead so the pin actually takes effect. The
+  # patch keeps rustc's export list on Windows GNU links, which
+  # cargo-zigbuild drops: without it lld exports every global symbol of the
+  # DLL and can strip nothing, so the library is many times its size.
+  cargoZigbuild = (pkgs.cargo-zigbuild.override { zig = linkingZig; }).overrideAttrs (previous: {
+    patches = (previous.patches or [ ]) ++ [ ./cargo-zigbuild-export-list.patch ];
+  });
 
   # Every crate in Cargo.lock, fetched by the checksum recorded there, laid
   # out as <name>-<version> directories like a cargo registry.
@@ -83,8 +87,10 @@ let
 
   # The dynamic library first; the rest are copied when the crate builds them.
   outputsFor = target:
-    if lib.hasInfix "-windows-" target
+    if lib.hasSuffix "-windows-msvc" target
     then [ "${library}.dll" "${library}.dll.lib" "${library}.lib" ]
+    else if lib.hasInfix "-windows-" target
+    then [ "${library}.dll" "lib${library}.dll.a" "lib${library}.a" ]
     else [ "lib${library}.so" "lib${library}.a" ];
 
   # importCargoLock writes the cargo configuration that serves every crate
@@ -98,8 +104,8 @@ let
     let
       t = env.targets.${target};
       v = targetVariable target;
-      # Linux goes through cargo-zigbuild, which configures the compiler,
-      # archiver, and linker from the same zig itself.
+      # Linux and GNU Windows go through cargo-zigbuild, which configures
+      # the compiler, archiver, and linker from the same zig itself.
       viaZigbuild = t ? zigTarget;
       outputs = outputsFor target;
     in stdenvNoCC.mkDerivation ({
@@ -161,7 +167,7 @@ let
         cargo ${if viaZigbuild then "zigbuild" else "build"} \
           --locked --offline --release --lib --package ${rust.crate} \
           --manifest-path "$PWD/${rust.manifest}" \
-          --target ${if viaZigbuild then "${target}.${floors.glibc}" else target} \
+          --target ${t.cargoTarget or target} \
           --target-dir "$TMPDIR/target"
         runHook postBuild
       '';
@@ -178,8 +184,7 @@ let
         # sandbox's /build is the canonical form, so only another build
         # directory can tell host-specific strings apart. The dynamic
         # library is what ships and what the lock records; the static one
-        # beside it keeps its objects' CodeView records, which on Windows
-        # name the object's path when a crate compiles its C with -g.
+        # beside it is not checked here, though CI compares it across hosts.
         if [ "$TMPDIR" != /build ]; then
           file=$out/lib/${builtins.head outputs}
           if grep -a -q -F -e "$PWD" -e "$TMPDIR/target" -e "$TMPDIR/vendor" "$file"; then
@@ -194,7 +199,7 @@ let
       "AR_${v}" = t.ar;
       "RANLIB_${v}" = t.ranlib;
     } // lib.optionalAttrs (!viaZigbuild) {
-      # cargo-zigbuild supplies the Linux linker itself.
+      # cargo-zigbuild supplies the linker itself where it drives the build.
       "CARGO_TARGET_${lib.toUpper v}_LINKER" = t.linker;
     });
 

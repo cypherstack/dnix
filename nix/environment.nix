@@ -10,7 +10,9 @@
 # path remap, since clang-cl spells them differently), tools
 # (nativeBuildInputs), and prepare (bash run before the build, which may
 # append to the arrays dnix_cflags, dnix_include_dirs, and dnix_lib_dirs).
-# Linux targets add zigTarget, the zig triple with the glibc floor.
+# Targets built through cargo-zigbuild (Linux, and Windows with the GNU
+# ABI) add zigTarget, zig's spelling of the triple, and cargoTarget, the
+# triple cargo-zigbuild is given, which for Linux carries the glibc floor.
 { pkgs, zig, settings }:
 let
   inherit (pkgs) lib stdenvNoCC;
@@ -21,7 +23,13 @@ let
 
   linuxTargets = builtins.filter (lib.hasSuffix "-linux-gnu") settings.targets;
   androidTargets = builtins.filter (lib.hasInfix "-linux-android") settings.targets;
-  windowsTargets = builtins.filter (lib.hasInfix "-windows-msvc") settings.targets;
+  windowsMsvcTargets = builtins.filter (lib.hasSuffix "-windows-msvc") settings.targets;
+  # The GNU ABI in Rust's -gnullvm flavour: MinGW-w64 as the LLVM toolchain
+  # builds it, with libunwind and SEH unwinding, which is what zig's is.
+  # Rust's older x86_64-pc-windows-gnu assumes GCC's runtime and DWARF
+  # unwinding instead, and links three times as much of std into a DLL.
+  windowsGnuTargets = builtins.filter (lib.hasSuffix "-windows-gnullvm") settings.targets;
+  windowsTargets = windowsMsvcTargets ++ windowsGnuTargets;
   appleTargets = builtins.filter (lib.hasInfix "-apple-") settings.targets;
   # Google ships no NDK host binaries for aarch64 Linux.
   androidSupported = system != "aarch64-linux";
@@ -67,12 +75,53 @@ let
     exec ${pkgs.runtimeShell} ${./cc-wrapper.sh} ${command} -- "''${args[@]}"
   '';
   wrapZig = name: zigArgs: wrapWithoutTarget name "${zig}/bin/zig ${zigArgs}";
+  # A CodeView object names the file the compiler wrote in an S_OBJNAME
+  # record, which no prefix map reaches: zig's cc driver asks clang for
+  # CodeView on Windows targets, so even at -g0 that is a temporary under
+  # zig's cache in the build directory, and clang-cl with /Z7 records the
+  # output path. The Windows compilers leave the name empty. Not the
+  # output's name: the cc crate names an object after a hash of its source
+  # directory, which for a source outside the crate, such as one a build
+  # script generates, is the build directory's, and so differs per host.
+  # The flag goes before a `--`, which ends options for clang-cl, where
+  # the cc crate puts one. zig's cc has no such option and rejects it,
+  # while CMake's resource preprocessing passes one before the source, so
+  # the zig wrappers drop it. A compile of plain assembly does not reach
+  # the stage that takes the flag and says so, as it already does about
+  # -fno-ident.
+  wrapWindowsCompiler = clangCl: name: command: pkgs.writeShellScriptBin name ''
+    args=()
+    compile=
+    for arg in "$@"; do
+      case "$arg" in
+        --target=*) continue ;;
+        ${lib.optionalString (!clangCl) "--) continue ;;"}
+        -c|/c) compile=1 ;;
+      esac
+      args+=("$arg")
+    done
+    extra=()
+    if [ -n "$compile" ]; then extra=(-Xclang -object-file-name=); fi
+    exec ${pkgs.runtimeShell} ${./cc-wrapper.sh} ${command} "''${extra[@]}" -- "''${args[@]}"
+  '';
 
   # Linux: zig provides the C compiler, linker, and a glibc at the floor
-  # version, so the result does not depend on the host's toolchain.
+  # version, so the result does not depend on the host's toolchain. Windows
+  # with the GNU ABI is the same toolchain with zig's bundled MinGW-w64
+  # headers and runtime in place of a glibc.
   zigTriple = target: "${builtins.replaceStrings [ "-unknown-linux-gnu" ] [ "-linux-gnu" ] target}.${floors.glibc}";
-  zigCc = target: wrapZig (ccName target) "cc -target ${zigTriple target}";
-  zigCxx = target: wrapZig (cxxName target) "c++ -target ${zigTriple target}";
+  zigWindowsTriple = target:
+    builtins.replaceStrings [ "-pc-windows-gnullvm" ] [ "-windows-gnu" ] target;
+  # The GNU Windows flag that keeps CodeView records host-independent (see
+  # cflags below) rides in the wrapper, where a build that ignores CFLAGS
+  # still gets it.
+  zigCc = target: triple: wrapZig (ccName target) "cc -target ${triple}";
+  zigCxx = target: triple: wrapZig (cxxName target) "c++ -target ${triple}";
+  zigWindowsArgs = "-gno-codeview-command-line";
+  zigWindowsCc = target: triple:
+    wrapWindowsCompiler false (ccName target) "${zig}/bin/zig cc -target ${triple} ${zigWindowsArgs}";
+  zigWindowsCxx = target: triple:
+    wrapWindowsCompiler false (cxxName target) "${zig}/bin/zig c++ -target ${triple} ${zigWindowsArgs}";
   zigAr = target: wrapTool (arName target) "${zig}/bin/zig ar";
   zigRanlib = target: wrapTool (ranlibName target) "${zig}/bin/zig ar s";
 
@@ -118,10 +167,11 @@ let
   androidArchiver = target: wrapTool (arName target) "${llvm.llvm}/bin/llvm-ar --format=gnu";
   androidRanlib = target: wrapTool (ranlibName target) "${llvm.llvm}/bin/llvm-ar --format=gnu s";
 
-  # Windows SDK and CRT, fetched by xwin from Microsoft's CDN. The Visual
-  # Studio channel manifest is pinned by its content-addressed URL and names
-  # every package with a hash, so the download set is fixed. Fixed-output:
-  # the first build reports the hash to put into toolchains.xwin.splatHash.
+  # Windows SDK and CRT for x86_64 and arm64, fetched by xwin from
+  # Microsoft's CDN. The Visual Studio channel manifest is pinned by its
+  # content-addressed URL and names every package with a hash, so the
+  # download set is fixed. Fixed-output: the first build reports the hash
+  # to put into toolchains.xwin.splatHash.
   vsChannel = pkgs.fetchurl {
     url = toolchains.xwin.channelUrl;
     sha256 = toolchains.xwin.channelSha256;
@@ -141,7 +191,7 @@ let
       # them here; the Windows build generates its own view below. Copy
       # rather than move: the build directory and the store are usually on
       # different file systems, and a rename across them fails.
-      xwin --accept-license --arch x86_64 --variant desktop \
+      xwin --accept-license --arch x86_64,aarch64 --variant desktop \
         --manifest ${vsChannel} --cache-dir "$TMPDIR/xwin-cache" \
         splat --disable-symlinks --copy --output "$out"
     '';
@@ -156,8 +206,20 @@ let
   # a `throw` without them and warns, clang-cl refuses (bitcoinconsensus
   # throws). A flag from the build script comes later and wins.
   windowsCcName = target: "dnix-clang-cl-${target}";
-  windowsCc = target: wrap (windowsCcName target)
-    "${zig}/bin/zig clang --driver-mode=cl --target=x86_64-pc-windows-msvc -resource-dir ${zig}/lib /EHsc";
+  windowsCc = target: wrapWindowsCompiler true (windowsCcName target)
+    "${zig}/bin/zig clang --driver-mode=cl --target=${target} -resource-dir ${zig}/lib /EHsc";
+  # llvm-rc preprocesses a resource script with a clang it finds beside
+  # itself or on PATH, and the preprocessing CMake does first does not tell
+  # it to skip its own. No tool set here has a program called clang, so
+  # the llvm-rc the toolchain files name, and the one PATH finds first,
+  # gives it zig's for the duration.
+  windowsClang = pkgs.writeShellScriptBin "clang" ''
+    exec ${zig}/bin/zig clang "$@"
+  '';
+  windowsRc = pkgs.writeShellScriptBin "llvm-rc" ''
+    export PATH=${windowsClang}/bin:$PATH
+    exec ${llvm.llvm}/bin/llvm-rc "$@"
+  '';
   # Two conventions reach the archiver: ar's (`cq archive objects`, from
   # the cc crate when the archiver's name says llvm-ar) and lib.exe's
   # (`-out:archive objects`, from cc crates before 1.0.9x on any MSVC
@@ -197,7 +259,15 @@ let
   '';
   windowsRanlib = target: wrapTool (ranlibName target) "${llvm.llvm}/bin/llvm-ar --format=gnu s";
   windowsIncludeDirs = [ "crt/include" "sdk/include/ucrt" "sdk/include/um" "sdk/include/shared" ];
-  windowsLibDirs = [ "crt/lib/x86_64" "sdk/lib/um/x86_64" "sdk/lib/ucrt/x86_64" ];
+  # xwin names the architectures as LLVM does.
+  windowsArch = target: if lib.hasPrefix "aarch64-" target then "aarch64" else "x86_64";
+  windowsLibDirs = target:
+    map (dir: "${dir}/${windowsArch target}") [ "crt/lib" "sdk/lib/um" "sdk/lib/ucrt" ];
+  # LLVM assembles MASM for x86 only; an arm64 project would need armasm64.
+  windowsMasm = target: lib.optionalString (windowsArch target == "x86_64") ''
+    set(CMAKE_ASM_MASM_COMPILER $(command -v llvm-ml))
+    set(CMAKE_ASM_MASM_FLAGS_INIT -m64)
+  '';
   # The SDK's headers and import libraries reference each other with
   # casings that differ from the file names, and rustc asks for lowercase
   # import libraries. On a case-sensitive file system that needs symlinks.
@@ -208,7 +278,7 @@ let
     sdk=${xwinSdk}
     overlay=$TMPDIR/xwin-overlay
     include_dirs="${toString windowsIncludeDirs}"
-    lib_dirs="${toString windowsLibDirs}"
+    lib_dirs="${toString (windowsLibDirs target)}"
     for dir in $include_dirs $lib_dirs; do
       mkdir -p "$overlay/$dir"
       for file in "$sdk/$dir"/*; do
@@ -253,12 +323,10 @@ let
     for dir in "''${dnix_lib_dirs[@]}"; do libpaths="$libpaths /libpath:$dir"; done
     cat > "$CMAKE_TOOLCHAIN_FILE" <<EOF
     set(CMAKE_SYSTEM_NAME Windows)
-    set(CMAKE_SYSTEM_PROCESSOR AMD64)
+    set(CMAKE_SYSTEM_PROCESSOR ${cmakeProcessor target})
     set(CMAKE_C_COMPILER $(command -v ${windowsCcName target}))
     set(CMAKE_CXX_COMPILER $(command -v ${windowsCcName target}))
-    set(CMAKE_ASM_MASM_COMPILER $(command -v llvm-ml))
-    set(CMAKE_ASM_MASM_FLAGS_INIT -m64)
-    set(CMAKE_RC_COMPILER $(command -v llvm-rc))
+    ${windowsMasm target}set(CMAKE_RC_COMPILER ${windowsRc}/bin/llvm-rc)
     set(CMAKE_MT $(command -v llvm-mt))
     set(CMAKE_AR $(command -v lib.exe))
     set(CMAKE_LINKER $(command -v lld-link))
@@ -279,9 +347,10 @@ let
     ldflags = [ ];
     includeFlag = "-isystem";
     prefixMapFlag = "-ffile-prefix-map=";
-    tools = [ zig (zigCc target) (zigCxx target) (zigAr target) (zigRanlib target) ];
+    tools = [ zig (zigCc target (zigTriple target)) (zigCxx target (zigTriple target)) (zigAr target) (zigRanlib target) ];
     prepare = "";
     zigTarget = zigTriple target;
+    cargoTarget = "${target}.${floors.glibc}";
   };
   androidTarget = target: {
     cc = ccName target;
@@ -301,6 +370,51 @@ let
       export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
     '';
   };
+  cmakeProcessor = target: if windowsArch target == "aarch64" then "ARM64" else "AMD64";
+  # Windows with the GNU ABI: zig's clang, lld, and bundled MinGW-w64, the
+  # Linux targets' toolchain driven by cargo-zigbuild, so there is no SDK
+  # to fetch. zig links its libc++ for -lc++ and -lstdc++ alike, so C++
+  # build scripts work unchanged. An MSVC-built application loads the DLL
+  # like any other; the runtime pieces linked into it are what differ.
+  windowsGnuTarget = target: let triple = zigWindowsTriple target; in {
+    cc = ccName target;
+    cxx = cxxName target;
+    ar = arName target;
+    ranlib = ranlibName target;
+    linker = ccName target;
+    # The wrapper adds one more: no compiler command line, with its store
+    # paths, in the CodeView records of a build script that compiles with
+    # -g. COFF objects carry no timestamp for this target unless asked,
+    # and the PE header's comes from SOURCE_DATE_EPOCH, which setup fixes.
+    cflags = baseCflags;
+    # No debug info in the DLL, as /DEBUG:NONE says for MSVC: a link with
+    # any writes a PDB beside it and stamps the DLL with a GUID derived
+    # from the PDB, whose contents name build paths. rustc only asks for
+    # this itself when the profile strips debug info.
+    ldflags = [ "-Wl,--strip-debug" ];
+    includeFlag = "-isystem";
+    prefixMapFlag = "-ffile-prefix-map=";
+    tools = [ zig windowsRc llvm.llvm pkgs.ninja (zigWindowsCc target triple) (zigWindowsCxx target triple) (zigAr target) (zigRanlib target) ];
+    # CMake builds get a toolchain file naming the platform and the same
+    # wrappers, as the MSVC targets do, so their objects are compiled the
+    # same way as the rest.
+    prepare = ''
+      export CMAKE_GENERATOR=Ninja
+      export CMAKE_TOOLCHAIN_FILE=$TMPDIR/dnix-windows.cmake
+      cat > "$CMAKE_TOOLCHAIN_FILE" <<EOF
+      set(CMAKE_SYSTEM_NAME Windows)
+      set(CMAKE_SYSTEM_PROCESSOR ${cmakeProcessor target})
+      set(CMAKE_C_COMPILER $(command -v ${ccName target}))
+      set(CMAKE_CXX_COMPILER $(command -v ${cxxName target}))
+      set(CMAKE_AR $(command -v ${arName target}))
+      set(CMAKE_RANLIB $(command -v ${ranlibName target}))
+      set(CMAKE_RC_COMPILER ${windowsRc}/bin/llvm-rc)
+      set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+      EOF
+    '';
+    zigTarget = triple;
+    cargoTarget = target;
+  };
   windowsTarget = target: {
     cc = windowsCcName target;
     cxx = windowsCcName target;
@@ -318,7 +432,7 @@ let
     # clang-cl ignores -isystem and -ffile-prefix-map; these are its forms.
     includeFlag = "/imsvc";
     prefixMapFlag = "/clang:-ffile-prefix-map=";
-    tools = [ zig llvm.lld llvm.llvm pkgs.ninja (windowsCc target) (windowsArchiver target) windowsLib (windowsRanlib target) ];
+    tools = [ zig llvm.lld windowsRc llvm.llvm pkgs.ninja (windowsCc target) (windowsArchiver target) windowsLib (windowsRanlib target) ];
     prepare = windowsPrepare target;
   };
 in
@@ -327,6 +441,7 @@ in
   targets = lib.genAttrs pureTargets (target:
     if lib.elem target linuxTargets then linuxTarget target
     else if lib.elem target androidTargets then androidTarget target
+    else if lib.elem target windowsGnuTargets then windowsGnuTarget target
     else windowsTarget target);
   # Bash every driver runs first: caches inside the sandbox, a fixed
   # timestamp for anything that stamps one.

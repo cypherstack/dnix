@@ -14,7 +14,7 @@
     xwin = {
       channelUrl = "https://download.visualstudio.microsoft.com/download/pr/c95450be-0a45-4779-b142-33f567ccfd6e/f24aa010ba2fd5079d502e47bf40f5932f097df4bd716234dc68175b39649401/VisualStudio.17.Release.chman";
       channelSha256 = "4f0f290bb4d58a061a49a2fa893357a8c9e7e2b49fc91873f533ab8f791e4fa0";
-      splatHash = "sha256-YjmEfoxtcmQXvUc+WtaElnyP/4osNvtSI7X6MDaNTjg=";
+      splatHash = "sha256-2Y0Y5SwJn7YP5wk+H8C6Is0RzH+aPqxlRRjUHy7ltdY=";
     };
     ndkLinux = {
       url = "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip";

@@ -1,7 +1,7 @@
 # Reproducibility
 
 Every non-Apple target is a Nix derivation built from toolchains pinned by
-hash: the official Rust and zig releases, lld from nixpkgs for the Windows
+hash: the official Rust and zig releases, lld from nixpkgs for the MSVC
 link, the Windows SDK fetched by xwin from a pinned Visual Studio channel
 manifest, and the Android NDK. The pinned inputs carry the guarantee; the
 Nix sandbox (on by default on Linux, `sandbox = true` in `nix.conf` on
@@ -10,8 +10,9 @@ macOS) additionally keeps the host out of the build.
 Within a build, source paths are remapped onto canonical prefixes (the
 build directory to `/build`, the workspace to `paths.workspace`, vendored
 crates to the cargo registry prefix), C and C++ objects carry no debug info
-or compiler identification, PE timestamps derive from content, archives use
-the GNU format with base names only, and deployment targets are fixed at the
+or compiler identification, PE timestamps are fixed (lld-link derives them
+from the content, zig's lld takes `SOURCE_DATE_EPOCH`), archives use the GNU
+format with base names only, and deployment targets are fixed at the
 floors. A library that still embeds a build directory, which happens when a
 crate turns `env!("CARGO_MANIFEST_DIR")` into a string, fails the build
 rather than differing per host.
@@ -36,10 +37,15 @@ Three details make the output independent of the host that builds it:
 - **The C compiler.** nixpkgs' clang is a separate build per host platform
   and emitted different code on each. Linux and Windows targets compile C
   with zig's bundled clang instead, whose output is the same everywhere;
-  on Windows it runs as clang-cl, since build scripts that target the MSVC
-  ABI assume cl.exe's flag syntax. Android uses the NDK's clang with debug
-  info and compiler identification off, which is where its host dependence
-  lived.
+  for the MSVC ABI it runs as clang-cl, since build scripts that target it
+  assume cl.exe's flag syntax, and for the GNU ABI it links with zig's
+  MinGW-w64 runtime, the PE timestamp taken from `SOURCE_DATE_EPOCH` and
+  no PDB. zig asks clang for CodeView on Windows, so each object names
+  itself in a record even at `-g0`, which no prefix map reaches; the
+  wrappers leave the name empty rather than the temporary under the build
+  directory that zig compiled into. Android uses the NDK's clang with
+  debug info and compiler identification off, which is where its host
+  dependence lived.
 - **The NDK's crt objects.** Google compiles each NDK host package's
   `crtbegin` objects with that package's own clang, and the darwin and Linux
   packages differ. Every host links the Linux package's objects.
