@@ -26,9 +26,25 @@ let
   rustToolchain = pkgs.rust-bin.stable.${settings.toolchains.rust}.minimal.override {
     targets = env.pureTargets ++ lib.optionals isDarwin env.appleTargets ++ [ fixedHost ];
   };
+  # zig's linker driver takes -Bdynamic and -Bstatic as orders where GNU
+  # ld takes them as preferences: told -Bdynamic by rustc ahead of a library
+  # a build script names without a kind, it refuses the archive that is all
+  # there is (randomx). The zig that links drops the two hints, which gives
+  # zig's default order back: a shared library when there is one, the
+  # archive otherwise, as ld does.
+  linkingZig = pkgs.writeShellScriptBin "zig" ''
+    if [ "''${1:-}" = cc ] || [ "''${1:-}" = c++ ]; then
+      args=()
+      for arg in "$@"; do
+        case "$arg" in -Wl,-Bdynamic|-Wl,-Bstatic) ;; *) args+=("$arg") ;; esac
+      done
+      exec ${zig}/bin/zig "''${args[@]}"
+    fi
+    exec ${zig}/bin/zig "$@"
+  '';
   # nixpkgs wraps cargo-zigbuild with its own zig on PATH; point it at the
   # pinned official binary instead so the pin actually takes effect.
-  cargoZigbuild = pkgs.cargo-zigbuild.override { inherit zig; };
+  cargoZigbuild = pkgs.cargo-zigbuild.override { zig = linkingZig; };
 
   # Every crate in Cargo.lock, fetched by the checksum recorded there, laid
   # out as <name>-<version> directories like a cargo registry.
