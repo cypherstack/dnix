@@ -36,7 +36,9 @@ Three details make the output independent of the host that builds it:
   a wrapper answers that one query with a fixed host.
 - **The C compiler.** nixpkgs' clang is a separate build per host platform
   and emitted different code on each. Linux and Windows targets compile C
-  with zig's bundled clang instead, whose output is the same everywhere;
+  with zig's bundled clang instead, whose output is the same everywhere,
+  told never to sanitize: at `-O0` it would add UBSan checks whose records
+  name its headers by store path;
   for the MSVC ABI it runs as clang-cl, since build scripts that target it
   assume cl.exe's flag syntax, and for the GNU ABI it links with zig's
   MinGW-w64 runtime, the PE timestamp taken from `SOURCE_DATE_EPOCH` and

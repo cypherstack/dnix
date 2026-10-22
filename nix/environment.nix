@@ -112,12 +112,18 @@ let
   zigTriple = target: "${builtins.replaceStrings [ "-unknown-linux-gnu" ] [ "-linux-gnu" ] target}.${floors.glibc}";
   zigWindowsTriple = target:
     builtins.replaceStrings [ "-pc-windows-gnullvm" ] [ "-windows-gnu" ] target;
-  # The GNU Windows flag that keeps CodeView records host-independent (see
-  # cflags below) rides in the wrapper, where a build that ignores CFLAGS
-  # still gets it.
-  zigCc = target: triple: wrapZig (ccName target) "cc -target ${triple}";
-  zigCxx = target: triple: wrapZig (cxxName target) "c++ -target ${triple}";
-  zigWindowsArgs = "-gno-codeview-command-line";
+  # zig's cc adds UBSan, with its runtime, to a compile that names no
+  # optimisation level, as a build script compiling at -O0 does, and the
+  # sanitizer's records name zig's headers by store path, which differs
+  # per host system; no wrapper lets it. (zig consumes the flag: UBSan and
+  # TSan cannot be asked for through the wrappers, ASan still can. Debug
+  # info, which zig also turns on by default, is for CFLAGS' -g0 to
+  # refuse.) The GNU Windows flag that keeps CodeView records
+  # host-independent (see cflags below) rides in the wrapper too, where a
+  # build that ignores CFLAGS still gets it.
+  zigCc = target: triple: wrapZig (ccName target) "cc -target ${triple} -fno-sanitize=all";
+  zigCxx = target: triple: wrapZig (cxxName target) "c++ -target ${triple} -fno-sanitize=all";
+  zigWindowsArgs = "-fno-sanitize=all -gno-codeview-command-line";
   zigWindowsCc = target: triple:
     wrapWindowsCompiler false (ccName target) "${zig}/bin/zig cc -target ${triple} ${zigWindowsArgs}";
   zigWindowsCxx = target: triple:

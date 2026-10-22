@@ -12,6 +12,9 @@
   no longer builds are an error rather than silently ignored.
 * A CMake build on a Windows target can compile resource scripts: the
   `llvm-rc` on its path has a clang for its preprocessing.
+* zig compiles C without its debug-mode sanitizer. A library whose C was
+  compiled with no optimisation level changes bytes; one compiled with
+  `-O1` or higher does not.
 
 ## 0.1.0
 
