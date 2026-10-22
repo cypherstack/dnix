@@ -88,18 +88,51 @@ let
   # while CMake's resource preprocessing passes one before the source, so
   # the zig wrappers drop it. A compile of plain assembly does not reach
   # the stage that takes the flag and says so, as it already does about
-  # -fno-ident.
+  # -fno-ident. The cmake crate names the C compiler as the resource
+  # compiler on GNU Windows targets, and a toolchain file cannot name
+  # another: CMake would delete its cache and configure again, for ever.
+  # CMake then drives the compiler as rc.exe, `<defines> <includes>
+  # <flags> /fo <object> <source>`; the GNU wrapper preprocesses the script
+  # itself, with the target's headers in scope, and hands the result to
+  # llvm-rc.
   wrapWindowsCompiler = clangCl: name: command: pkgs.writeShellScriptBin name ''
     args=()
     compile=
+    resource=
     for arg in "$@"; do
       case "$arg" in
         --target=*) continue ;;
-        ${lib.optionalString (!clangCl) "--) continue ;;"}
+        ${lib.optionalString (!clangCl) ''
+          --) continue ;;
+          /fo|/fo*|-fo|-fo*) resource=1 ;;
+        ''}
         -c|/c) compile=1 ;;
       esac
       args+=("$arg")
     done
+    if [ -n "$resource" ]; then
+      object=
+      source=
+      options=()
+      expect=
+      for arg in "$@"; do
+        if [ -n "$expect" ]; then
+          case "$expect" in fo) object=$arg ;; I) options+=(-I "$arg") ;; esac
+          expect=
+          continue
+        fi
+        case "$arg" in
+          /fo|-fo) expect=fo ;;
+          /fo*|-fo*) object=''${arg#???} ;;
+          -I|/I) expect=I ;;
+          -I*|/I*) options+=(-I "''${arg#??}") ;;
+          -D*|/D*) options+=(-D "''${arg#??}") ;;
+          *.rc|*.RC) source=$arg ;;
+        esac
+      done
+      "$0" -E -x c -DRC_INVOKED "''${options[@]}" -o "$object.pp" "$source" || exit
+      exec ${windowsRc}/bin/llvm-rc /fo "$object" "$object.pp"
+    fi
     extra=()
     if [ -n "$compile" ]; then extra=(-Xclang -object-file-name=); fi
     exec ${pkgs.runtimeShell} ${./cc-wrapper.sh} ${command} "''${extra[@]}" -- "''${args[@]}"
@@ -403,8 +436,26 @@ let
     tools = [ zig windowsRc llvm.llvm pkgs.ninja (zigWindowsCc target triple) (zigWindowsCxx target triple) (zigAr target) (zigRanlib target) ];
     # CMake builds get a toolchain file naming the platform and the same
     # wrappers, as the MSVC targets do, so their objects are compiled the
-    # same way as the rest.
+    # same way as the rest. It names llvm-rc for resources only when the
+    # caller named nothing: the cmake crate names the C compiler, which
+    # hands resource scripts on, and naming another over it makes CMake
+    # delete its cache and configure again without end.
     prepare = ''
+      # bindgen hands clang the Rust triple, and clang rejects -gnullvm;
+      # given a --target of its own, bindgen uses that instead. The plain
+      # variable: cargo-zigbuild derives the per-target ones from it, and
+      # bindgen reads those first.
+      export BINDGEN_EXTRA_CLANG_ARGS="--target=${builtins.replaceStrings [ "-gnullvm" ] [ "-gnu" ] target}"
+      # zig's MinGW has no import library called synchronization, the
+      # SDK's umbrella for api-ms-win-core-synch-l1-2-0, which the windows
+      # crate links by that name; one is made from zig's definition of the
+      # latter. cargo-zigbuild would copy the definition into zig's own
+      # tree for the same purpose, which the store does not allow.
+      mkdir -p "$TMPDIR/dnix-import-libraries"
+      ${llvm.llvm}/bin/llvm-dlltool -m ${if windowsArch target == "aarch64" then "arm64" else "i386:x86-64"} \
+        -d ${zig}/lib/libc/mingw/lib-common/api-ms-win-core-synch-l1-2-0.def \
+        -l "$TMPDIR/dnix-import-libraries/libsynchronization.a"
+      dnix_lib_dirs+=("$TMPDIR/dnix-import-libraries")
       export CMAKE_GENERATOR=Ninja
       export CMAKE_TOOLCHAIN_FILE=$TMPDIR/dnix-windows.cmake
       cat > "$CMAKE_TOOLCHAIN_FILE" <<EOF
@@ -414,7 +465,9 @@ let
       set(CMAKE_CXX_COMPILER $(command -v ${cxxName target}))
       set(CMAKE_AR $(command -v ${arName target}))
       set(CMAKE_RANLIB $(command -v ${ranlibName target}))
-      set(CMAKE_RC_COMPILER ${windowsRc}/bin/llvm-rc)
+      if(NOT CMAKE_RC_COMPILER)
+        set(CMAKE_RC_COMPILER ${windowsRc}/bin/llvm-rc)
+      endif()
       set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
       EOF
     '';

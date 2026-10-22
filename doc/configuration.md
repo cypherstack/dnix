@@ -112,7 +112,12 @@ runtime, and C++ gets zig's libc++ whether a build script asks for `c++`
 or `stdc++`. A CMake build on Windows (the `cmake` crate, with `cmake` in
 `rust.tools`) uses Ninja and a toolchain file that names the same compiler,
 `llvm-rc` for resources, and for MSVC LLVM's `llvm-ml` (x86_64 only) and
-`lld-link`.
+`lld-link`. On the GNU targets the cmake crate names the C compiler as the
+resource compiler itself; the wrapper hands a resource script on to
+`llvm-rc`, preprocessed with the target's headers in scope. bindgen is
+told the clang spelling of the GNU triple through `BINDGEN_EXTRA_CLANG_ARGS`,
+since clang rejects `-gnullvm`; a package that sets that variable itself
+keeps the `--target` in it.
 Build scripts see only the tools of the Nix build, or on a Mac Xcode's
 tools plus the flake's shell, never Homebrew or `~/.cargo/bin`.
 
