@@ -13,7 +13,10 @@ The facts about the package that both the hook and the Nix build read.
 | `rust.workspace` | Directory holding `Cargo.lock`, relative to the package root. `"."` for the root. |
 | `rust.crate` | The cargo package to build. |
 | `rust.manifest` | `Cargo.toml` to pass to cargo, relative to the workspace. Default `Cargo.toml`. |
-| `rust.outputHashes` | Hashes for git dependencies in the lock file, as nixpkgs' `importCargoLock` takes them: `{"<crate>-<version>": "sha256-…"}`. Put a wrong hash in first; the build fails and prints the right one. |
+| `rust.cflags` | Extra C and C++ flags per target, `{"<target>": ["-D…"]}`, appended to what dnix sets. For a `-sys` crate that needs a define on one platform. |
+| `rust.env` | Extra environment variables for the build, `{"NAME": "value"}`, set for every target. For example `CXXSTDLIB_aarch64_linux_android: "static:-bundle=c++"` links the NDK's C++ runtime statically instead of shipping `libc++_shared.so`. Not for `CFLAGS`, `CXXFLAGS`, or `RUSTFLAGS`, which dnix composes itself. |
+| `rust.tools` | Extra tools build scripts run, as nixpkgs package names, like `["protobuf"]` for a crate that runs `protoc`. They are on `PATH` in the sandbox and in the Apple shell; `perl` and `make` are always there. Their output must not depend on the host, which holds for code generators. |
+| `rust.outputHashes` | Normally empty: git dependencies are fetched at the revision `Cargo.lock` records. Only a lock that names a git source without a full revision needs hashes here, as nixpkgs' `importCargoLock` takes them: `{"<crate>-<version>": "sha256-…"}`. |
 | `targets` | The target triples the package ships. See the list below. |
 | `toolchains.rust` | The Rust version to build with, a stable release like `"1.99.1"`. Required. |
 | `toolchains.xcode` | The Xcode version for Apple targets. Default `"27.0"`; must match the `macos-runner` the workflow uses. `toolchains.xcodeBuild` optionally pins the build number too, like `"27A266a"`, which tells a beta from the release. |
@@ -52,9 +55,14 @@ Changing any of them means a new lock and a new release.
   ```
 
 - A current `Cargo.lock` with every dependency: the build runs
-  `cargo --locked --offline`. Git dependencies need `rust.outputHashes`.
+  `cargo --locked --offline`. Git dependencies are fine; they are fetched
+  at the locked revision.
 - No `.cargo/config.toml` that changes codegen; the build sets its own
   flags and ignores configuration outside the workspace.
+- Build scripts that configure a C library the classic way, such as
+  `openssl-src`, work: `perl` and `make` are in the build, and the compiler
+  is invoked by a bare name so what such a library records about its build
+  is the same on every host.
 - No crate that turns `env!("CARGO_MANIFEST_DIR")` or `env!("OUT_DIR")`
   into a string in the library. Remapping covers the paths the compiler
   records, not those; the build fails if a build directory reaches the

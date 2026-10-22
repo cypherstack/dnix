@@ -23,7 +23,7 @@ if [ -z "${DNIX_ISOLATED:-}" ]; then
     HOME="$HOME" PATH="/usr/bin:/bin$store_path" TMPDIR="${TMPDIR:-/tmp}"
     RUSTC_WRAPPER="${RUSTC_WRAPPER:?run inside the apple shell}"
     DNIX_SETTINGS="$DNIX_SETTINGS" DNIX_RUST="$DNIX_RUST"
-    DNIX_SRC="$DNIX_SRC" DNIX_VENDOR="$DNIX_VENDOR"
+    DNIX_SRC="$DNIX_SRC" DNIX_VENDOR="$DNIX_VENDOR" DNIX_CC_WRAPPER="$DNIX_CC_WRAPPER"
   )
   if [ -n "${DEVELOPER_DIR:-}" ]; then keep+=(DEVELOPER_DIR="$DEVELOPER_DIR"); fi
   if [ -n "${DNIX_ANY_XCODE:-}" ]; then keep+=(DNIX_ANY_XCODE="$DNIX_ANY_XCODE"); fi
@@ -83,19 +83,28 @@ else
   echo "$name: building with Xcode $(xcode_version "$DEVELOPER_DIR") ($(xcode_build "$DEVELOPER_DIR")) at $DEVELOPER_DIR" >&2
 fi
 
+work=$(cd "$(mktemp -d)" && pwd -P)
+trap 'rm -rf "$work"' EXIT
+
 # The flake's shell puts nixpkgs' clang on PATH as cc; Apple targets, and the
 # build scripts compiled for the host while building them, must use the
 # toolchain xcode-select points at instead (/usr/bin comes first on PATH).
+# Like the sandboxed targets, the target compilers are wrappers invoked by
+# a bare name, so a build that records its compiler records the same name
+# on every Mac; see cc-wrapper.sh.
 export CC=/usr/bin/cc CXX=/usr/bin/c++ AR=/usr/bin/ar
+mkdir -p "$work/bin"
+export PATH=$work/bin:$PATH
 while IFS= read -r apple_target; do
   variable=${apple_target//-/_}
   upper=$(printf '%s' "$variable" | tr '[:lower:]' '[:upper:]')
-  export "CC_$variable=/usr/bin/cc" "CXX_$variable=/usr/bin/c++" "AR_$variable=/usr/bin/ar"
+  for pair in "cc:/usr/bin/cc" "c++:/usr/bin/c++"; do
+    printf '#!/bin/bash\nexec %s %s -- "$@"\n' "$DNIX_CC_WRAPPER" "${pair#*:}" > "$work/bin/dnix-${pair%%:*}-$apple_target"
+    chmod +x "$work/bin/dnix-${pair%%:*}-$apple_target"
+  done
+  export "CC_$variable=dnix-cc-$apple_target" "CXX_$variable=dnix-c++-$apple_target" "AR_$variable=/usr/bin/ar"
   export "CARGO_TARGET_${upper}_LINKER=/usr/bin/cc"
 done < <(jq -r '.targets[] | select(contains("-apple-"))' "$settings")
-
-work=$(cd "$(mktemp -d)" && pwd -P)
-trap 'rm -rf "$work"' EXIT
 
 cp -RL "$DNIX_VENDOR" "$work/vendor"
 chmod -R u+w "$work/vendor"
@@ -120,11 +129,19 @@ workspace_prefix=$(jq -r .paths.workspace "$settings")
 registry_prefix=$(jq -r '.paths.registry + "/" + .paths.registryIndex' "$settings")
 remaps=("$work=/build" "$work/src=$workspace_prefix" "$work/vendor=$registry_prefix")
 rustflags=()
-cflags=()
+# Flags that name directories go to the compiler wrappers, not into CFLAGS.
+ccargs=()
 for remap in "${remaps[@]}"; do
   rustflags+=("--remap-path-prefix=$remap")
-  cflags+=("-ffile-prefix-map=$remap")
+  ccargs+=("-ffile-prefix-map=$remap")
 done
+export DNIX_BUILD_ROOT=$work
+DNIX_CC_ARGS=$(printf '%s\n' "${ccargs[@]}")
+export DNIX_CC_ARGS
+# Variables the package adds, from dnix.json.
+while IFS= read -r assignment; do
+  [ -n "$assignment" ] && export "$assignment"
+done < <(jq -r '.rust.env // {} | to_entries[] | "\(.key)=\(.value)"' "$settings")
 # Location-independent install name with room for tools that rewrite it
 # to an absolute path (dart test does), no post-link strip, and no debug
 # map from the linker.
@@ -141,8 +158,10 @@ CARGO_ENCODED_RUSTFLAGS=$(IFS=$'\x1f'; printf '%s' "${rustflags[*]}")
 # copied workspace may contribute any.
 cd "$work/src"
 for target in "${targets[@]}"; do
-  # The cc crate reads CXXFLAGS for C++ sources, not CFLAGS.
-  export "CFLAGS_${target//-/_}=${cflags[*]}" "CXXFLAGS_${target//-/_}=${cflags[*]}"
+  # The flags the package adds for this target, from dnix.json. The cc
+  # crate reads CXXFLAGS for C++ sources, not CFLAGS.
+  cflags=$(jq -r --arg t "$target" '.rust.cflags[$t] // [] | join(" ")' "$settings")
+  export "CFLAGS_${target//-/_}=$cflags" "CXXFLAGS_${target//-/_}=$cflags"
   cargo build --locked --offline --release --lib --package "$crate" \
     --manifest-path "$work/src/$manifest" \
     --target "$target" --target-dir "$work/target"

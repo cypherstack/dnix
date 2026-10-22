@@ -106,6 +106,12 @@ void main() {
       );
     }
     expect(write('{"rust": {"workspace": "./"}}').rustWorkspace, '.');
+    expect(
+      write(
+        '{"rust": {"workspace": ".", "crate": "x", "cflags": {}, "env": {}}}',
+      ).rustCrate,
+      'x',
+    );
     expect(write('{"rust": {"workspace": "./src/x/"}}').rustWorkspace, 'src/x');
     expect(
       () => write('{"library": "a/b"}').library,

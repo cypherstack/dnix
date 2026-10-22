@@ -16,6 +16,15 @@ floors. A library that still embeds a build directory, which happens when a
 crate turns `env!("CARGO_MANIFEST_DIR")` into a string, fails the build
 rather than differing per host.
 
+Some C libraries record how they were built. OpenSSL keeps its compiler
+command line and its install directories in `libcrypto`, which would carry
+a store path that differs per host system and a build directory that
+differs per machine. So every compiler is a wrapper invoked by a bare name
+from `PATH`, the flags that name directories are added inside the wrapper
+rather than in `CFLAGS`, and a `-D` macro whose value mentions the build
+directory is rewritten to `/build`, the name the Linux sandbox gives it.
+What such a library records is then the same everywhere.
+
 Three details make the output independent of the host that builds it:
 
 - **Cargo's host triple.** Cargo mixes rustc's host triple into the metadata

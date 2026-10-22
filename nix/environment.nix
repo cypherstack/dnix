@@ -3,11 +3,12 @@
 # the SDKs they need. Nothing here knows which build tool consumes it; the
 # language drivers (rust.nix and later ones) read these attribute sets.
 #
-# Every target set has: cc, cxx, ar, linker (paths), cflags and ldflags
-# (lists), tools (extra nativeBuildInputs), and prepare (bash run before the
-# build, which may append to the arrays dnix_cflags, dnix_include_dirs, and
-# dnix_lib_dirs). Linux targets add zigTarget, the zig triple with the glibc
-# floor.
+# Every target set has: cc, cxx, ar, ranlib, linker (names of wrappers that `tools`
+# puts on PATH; see cc-wrapper.sh for why names rather than paths), cflags
+# and ldflags (lists of host-independent flags), tools (nativeBuildInputs),
+# and prepare (bash run before the build, which may append to the arrays
+# dnix_cflags, dnix_include_dirs, and dnix_lib_dirs). Linux targets add
+# zigTarget, the zig triple with the glibc floor.
 { pkgs, zig, settings }:
 let
   inherit (pkgs) lib stdenvNoCC;
@@ -32,18 +33,43 @@ let
   # build flags into it.
   baseCflags = [ "-g0" "-fno-ident" ];
 
+  # Every compiler is a wrapper invoked by a bare name from a bin directory
+  # on PATH, through cc-wrapper.sh. A build that records its compiler
+  # (OpenSSL's build info, for one) then records a name that is the same on
+  # every host, not a store path that differs per host system.
+  wrap = name: command: pkgs.writeShellScriptBin name ''
+    exec ${./cc-wrapper.sh} ${command} -- "$@"
+  '';
+  # Archivers take no compiler flags, so they skip the wrapper's additions.
+  wrapTool = name: command: pkgs.writeShellScriptBin name ''
+    exec ${command} "$@"
+  '';
+  ccName = target: "dnix-cc-${target}";
+  cxxName = target: "dnix-c++-${target}";
+  # The name contains "llvm-ar" so the cc crate uses ar-style invocation,
+  # which stores base names rather than paths. ranlib is the same tool's
+  # `s` operation: left to be found on PATH, a build like OpenSSL's would
+  # run the host's ranlib and rewrite the archive in the host's format.
+  arName = target: "llvm-ar-dnix-${target}";
+  ranlibName = target: "llvm-ranlib-dnix-${target}";
+
+  # zig's clang takes its target from -target; the cc crate's --target with
+  # the Rust spelling of the triple would be rejected, so it is dropped.
+  wrapZig = name: zigArgs: pkgs.writeShellScriptBin name ''
+    args=()
+    for arg in "$@"; do
+      case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac
+    done
+    exec ${./cc-wrapper.sh} ${zig}/bin/zig ${zigArgs} -- "''${args[@]}"
+  '';
+
   # Linux: zig provides the C compiler, linker, and a glibc at the floor
   # version, so the result does not depend on the host's toolchain.
   zigTriple = target: "${builtins.replaceStrings [ "-unknown-linux-gnu" ] [ "-linux-gnu" ] target}.${floors.glibc}";
-  zigCc = target: pkgs.writeShellScript "zig-cc-${target}" ''
-    exec ${zig}/bin/zig cc -target ${zigTriple target} "$@"
-  '';
-  zigCxx = target: pkgs.writeShellScript "zig-c++-${target}" ''
-    exec ${zig}/bin/zig c++ -target ${zigTriple target} "$@"
-  '';
-  zigAr = pkgs.writeShellScript "zig-ar" ''
-    exec ${zig}/bin/zig ar "$@"
-  '';
+  zigCc = target: wrapZig (ccName target) "cc -target ${zigTriple target}";
+  zigCxx = target: wrapZig (cxxName target) "c++ -target ${zigTriple target}";
+  zigAr = target: wrapTool (arName target) "${zig}/bin/zig ar";
+  zigRanlib = target: wrapTool (ranlibName target) "${zig}/bin/zig ar s";
 
   # Android: the pinned NDK's clang at the API floor.
   androidSdk = (pkgs.androidenv.composeAndroidPackages {
@@ -78,11 +104,11 @@ let
     builtins.replaceStrings [ "armv7-linux-androideabi" ] [ "arm-linux-androideabi" ] target;
   androidClang = target:
     "${ndkBin}/${builtins.replaceStrings [ "armv7-" ] [ "armv7a-" ] target}${toString floors.android}-clang";
-  # llvm-ar in GNU format, named so the cc crate uses ar-style invocation,
-  # which stores base names rather than paths.
-  androidArchiver = pkgs.writeShellScript "llvm-ar-gnu" ''
-    exec ${llvm.llvm}/bin/llvm-ar --format=gnu "$@"
-  '';
+  androidCc = target: wrap (ccName target) (androidClang target);
+  androidCxx = target: wrap (cxxName target) "${androidClang target}++";
+  # llvm-ar in GNU format.
+  androidArchiver = target: wrapTool (arName target) "${llvm.llvm}/bin/llvm-ar --format=gnu";
+  androidRanlib = target: wrapTool (ranlibName target) "${llvm.llvm}/bin/llvm-ar --format=gnu s";
 
   # Windows SDK and CRT, fetched by xwin from Microsoft's CDN. The Visual
   # Studio channel manifest is pinned by its content-addressed URL and names
@@ -114,19 +140,12 @@ let
   };
   # zig's clang targeting the MSVC ABI. The cc crate passes --target for
   # its own notion of the triple; zig's -target wins, so drop it.
-  windowsCc = pkgs.writeShellScript "zig-cc-windows-msvc" ''
-    args=()
-    for arg in "$@"; do
-      case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac
-    done
-    exec ${zig}/bin/zig cc -target x86_64-windows-msvc "''${args[@]}"
-  '';
+  windowsCc = name: wrapZig name "cc -target x86_64-windows-msvc";
   # clang emits an S_OBJNAME CodeView record holding the object's absolute
   # path even with debug info off, and the build directory differs between
   # Linux and macOS sandboxes. This archiver strips the CodeView sections
-  # before archiving. Its name contains "llvm-ar" so the cc crate uses
-  # ar-style invocation, which stores base names rather than paths.
-  windowsArchiver = pkgs.writeShellScript "llvm-ar-without-codeview" ''
+  # before archiving.
+  windowsArchiver = target: pkgs.writeShellScriptBin (arName target) ''
     for arg in "$@"; do
       case "$arg" in
         *.o|*.obj) ${llvm.llvm}/bin/llvm-objcopy --remove-section '.debug$S' --remove-section '.debug$T' "$arg" ;;
@@ -134,6 +153,7 @@ let
     done
     exec ${llvm.llvm}/bin/llvm-ar --format=gnu "$@"
   '';
+  windowsRanlib = target: wrapTool (ranlibName target) "${llvm.llvm}/bin/llvm-ar --format=gnu s";
   windowsIncludeDirs = [ "crt/include" "sdk/include/ucrt" "sdk/include/um" "sdk/include/shared" ];
   windowsLibDirs = [ "crt/lib/x86_64" "sdk/lib/um/x86_64" "sdk/lib/ucrt/x86_64" ];
   # The SDK's headers and import libraries reference each other with
@@ -184,31 +204,38 @@ let
   '';
 
   linuxTarget = target: {
-    cc = zigCc target;
-    cxx = zigCxx target;
-    ar = zigAr;
-    linker = zigCc target;
+    cc = ccName target;
+    cxx = cxxName target;
+    ar = arName target;
+    ranlib = ranlibName target;
+    linker = ccName target;
     cflags = baseCflags;
     ldflags = [ ];
-    tools = [ zig ];
+    tools = [ zig (zigCc target) (zigCxx target) (zigAr target) (zigRanlib target) ];
     prepare = "";
     zigTarget = zigTriple target;
   };
   androidTarget = target: {
-    cc = androidClang target;
-    cxx = "${androidClang target}++";
-    ar = androidArchiver;
-    linker = androidClang target;
+    cc = ccName target;
+    cxx = cxxName target;
+    ar = arName target;
+    ranlib = ranlibName target;
+    linker = ccName target;
     cflags = baseCflags;
     # -B makes clang take crtbegin_so.o and crtend_so.o from here first.
     ldflags = [ "-B${androidCrt}/${androidSysrootDir target}" ];
-    tools = [ ];
-    prepare = "";
+    tools = [ (androidCc target) (androidCxx target) (androidArchiver target) (androidRanlib target) ];
+    # CMake-based build scripts find the NDK's toolchain file through these.
+    prepare = ''
+      export ANDROID_NDK_ROOT=${androidSdk}/libexec/android-sdk/ndk-bundle
+      export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+    '';
   };
   windowsTarget = target: {
-    cc = windowsCc;
-    cxx = windowsCc;
-    ar = windowsArchiver;
+    cc = ccName target;
+    cxx = cxxName target;
+    ar = arName target;
+    ranlib = ranlibName target;
     linker = "lld-link";
     # clang's default for MSVC targets stamps a timestamp into every COFF
     # object for incremental linking; the cc crate disables that for
@@ -217,7 +244,7 @@ let
     # /Brepro derives the PE timestamp from the content. No PDB: its
     # content-derived GUID would otherwise land in the DLL.
     ldflags = [ "/Brepro" "/DEBUG:NONE" ];
-    tools = [ zig llvm.lld llvm.llvm ];
+    tools = [ zig llvm.lld llvm.llvm (windowsCc (ccName target)) (windowsCc (cxxName target)) (windowsArchiver target) (windowsRanlib target) ];
     prepare = windowsPrepare;
   };
 in
