@@ -38,9 +38,11 @@ let
   # Every compiler is a wrapper invoked by a bare name from a bin directory
   # on PATH, through cc-wrapper.sh. A build that records its compiler
   # (OpenSSL's build info, for one) then records a name that is the same on
-  # every host, not a store path that differs per host system.
+  # every host, not a store path that differs per host system. The script
+  # runs under the store's bash: the Linux sandbox has no /usr/bin/env for
+  # its shebang to find.
   wrap = name: command: pkgs.writeShellScriptBin name ''
-    exec ${./cc-wrapper.sh} ${command} -- "$@"
+    exec ${pkgs.runtimeShell} ${./cc-wrapper.sh} ${command} -- "$@"
   '';
   # Archivers take no compiler flags, so they skip the wrapper's additions.
   wrapTool = name: command: pkgs.writeShellScriptBin name ''
@@ -62,7 +64,7 @@ let
     for arg in "$@"; do
       case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac
     done
-    exec ${./cc-wrapper.sh} ${command} -- "''${args[@]}"
+    exec ${pkgs.runtimeShell} ${./cc-wrapper.sh} ${command} -- "''${args[@]}"
   '';
   wrapZig = name: zigArgs: wrapWithoutTarget name "${zig}/bin/zig ${zigArgs}";
 
