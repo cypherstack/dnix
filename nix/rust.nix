@@ -75,7 +75,15 @@ let
   # name is a real triple that is never a build target here, so no target
   # configuration can be mistaken for host configuration.
   fixedHost = "x86_64-unknown-linux-musl";
+  # A qsort that sorts the same on every build host, loaded into rustc;
+  # see stable-qsort.c.
+  stableQsort = pkgs.runCommandCC "dnix-stable-qsort" { } ''
+    mkdir -p $out/lib
+    $CC -O2 -shared -fPIC -o $out/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary} ${./stable-qsort.c}
+  '';
+  preload = if isDarwin then "DYLD_INSERT_LIBRARIES" else "LD_PRELOAD";
   rustcWrapper = pkgs.writeShellScript "rustc-fixed-host" ''
+    export ${preload}=${stableQsort}/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}
     if [ "$#" -eq 2 ] && [ "$2" = "-vV" ]; then
       "$1" -vV | sed 's/^host: .*/host: ${fixedHost}/'
       exit "''${PIPESTATUS[0]}"
@@ -145,6 +153,10 @@ let
         export CARGO_HOME=$TMPDIR/cargo-home
         mkdir -p "$CARGO_HOME"
         export RUSTC_WRAPPER=${rustcWrapper}
+        if [ "$(DNIX_STABLE_QSORT_CHECK=1 "$RUSTC_WRAPPER" rustc --version 2>&1 >/dev/null)" != dnix-stable-qsort ]; then
+          echo "dnix: rustc did not load ${stableQsort}, so the code it emits would depend on the build host's C library" >&2
+          exit 1
+        fi
         vendor=$TMPDIR/vendor
         cp -RL ${vendor} "$vendor"
         chmod -R u+w "$vendor"
