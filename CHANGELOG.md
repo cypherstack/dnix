@@ -28,6 +28,30 @@
 * bindgen loads libclang from the pinned LLVM. A crate that generates
   bindings no longer fails to build on Linux, where the sandbox has no
   libclang, nor depends on the Mac's Xcode or Command Line Tools on macOS.
+* A library built on macOS is now byte-identical to the same library built
+  on Linux. Three things differed by build host, and each change below can
+  alter a package's bytes once; run `dart tool/update_lock.dart` after
+  updating dnix:
+  * Cargo resolved build scripts' and proc macros' dependencies for the
+    machine running the build, so a dependency that only one host's
+    platform needs changed the symbol hashes of everything above it. A
+    platform condition in a vendored manifest that holds on some build
+    hosts and not on others now holds on all of them for build-time
+    dependencies; what the library itself links is unchanged.
+  * LLVM sorts some lists with the C library's `qsort`, and glibc and macOS
+    order equal elements differently, which changed instruction order and
+    the names of promoted symbols on ARM targets. rustc runs with a `qsort`
+    that is glibc's merge sort on every host, and a build stops if rustc
+    did not load it.
+  * bindgen ran Xcode's clang on macOS, and none on Linux, to find header
+    directories, so the same header gave different bindings. It now runs
+    the clang that belongs to the pinned libclang, and Android builds hand
+    it the NDK's sysroot.
+* A target keeps only its dynamic library, the file the lock records and
+  the hook ships. A static library or import library the crate also builds
+  is no longer in the build output, the CI artifacts, or `SHA256SUMS`; its
+  member names and debug info carry the build directory and toolchain
+  paths, so it could not be compared across machines.
 
 ## 0.1.0
 

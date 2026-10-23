@@ -28,12 +28,36 @@ the Linux sandbox gives it. What such a library records is then the same
 everywhere, and no build can pick up the host's own `ranlib`, which on
 macOS would rewrite an archive in Darwin format.
 
-Three details make the output independent of the host that builds it:
+These details make the output independent of the host that builds it:
 
 - **Cargo's host triple.** Cargo mixes rustc's host triple into the metadata
   hash of build scripts and proc macros, and from there into the symbol hash
   of nearly every crate. Cargo reads `rustc -vV` through `RUSTC_WRAPPER`, so
   a wrapper answers that one query with a fixed host.
+- **Cargo's host platform.** Cargo resolves the dependencies of build
+  scripts and proc macros for the machine running the build: a crate that
+  needs `libc` on Linux but not on macOS gives each host a different graph,
+  and the metadata hashes follow. The wrapper adds a `dnix_host` flag to
+  Cargo's query for the host's configuration, and `nix/host-graph.py`
+  rewrites each vendored manifest's platform condition that holds on some
+  build hosts and not on others to `cfg(any(dnix_host, …))`. Build-time
+  dependencies are then the union of every build host's, the same set
+  everywhere; target conditions are untouched, so the library links what
+  it did.
+- **The C library inside rustc.** LLVM sorts some lists with `qsort`, and
+  where two entries compare equal the C library picks their order: glibc's
+  merge sort keeps it, macOS's sort does not. On ARM targets that changed
+  instruction order and the names of symbols promoted across codegen units.
+  The wrapper loads `nix/stable-qsort.c`, glibc's merge sort, into rustc on
+  every host (`LD_PRELOAD` or `DYLD_INSERT_LIBRARIES`, removed again before
+  rustc starts anything else), and the build stops unless rustc confirms
+  it loaded it.
+- **bindgen's headers.** bindgen asks a clang for its header directories
+  and puts them ahead of libclang's own. Left to look, it found Xcode's
+  clang on macOS and none in the Linux sandbox, so the same header gave
+  different bindings. `CLANG_PATH` names the clang that belongs to the
+  pinned libclang, and Android builds pass the NDK's sysroot, the headers
+  their C is compiled against.
 - **The C compiler.** nixpkgs' clang is a separate build per host platform
   and emitted different code on each. Linux and Windows targets compile C
   with zig's bundled clang instead, whose output is the same everywhere,
