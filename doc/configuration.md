@@ -74,8 +74,9 @@ Changing any of them means a new lock and a new release.
 
 ## What the crate needs
 
-- `crate-type` includes `cdylib`. The dynamic library is what ships; a
-  `staticlib` beside it is built and kept in CI artifacts but not released.
+- `crate-type` includes `cdylib`. The dynamic library is what ships and the
+  only file a build keeps; a `staticlib` or import library the crate also
+  builds is left behind.
 - A release profile that does not depend on toolchain defaults, like the
   fixture in `fixtures/rust/Cargo.toml`:
 

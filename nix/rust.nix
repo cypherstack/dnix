@@ -114,13 +114,13 @@ let
 
   targetVariable = target: builtins.replaceStrings [ "-" ] [ "_" ] target;
 
-  # The dynamic library first; the rest are copied when the crate builds them.
-  outputsFor = target:
-    if lib.hasSuffix "-windows-msvc" target
-    then [ "${library}.dll" "${library}.dll.lib" "${library}.lib" ]
-    else if lib.hasInfix "-windows-" target
-    then [ "${library}.dll" "lib${library}.dll.a" "lib${library}.a" ]
-    else [ "lib${library}.so" "lib${library}.a" ];
+  # The dynamic library, the one file a target ships and the lock records.
+  # A static library or import library the crate also builds is left
+  # behind: nothing uses it, and its member names and debug info carry the
+  # build directory and toolchain store paths, so keeping it would only
+  # make every comparison fail on bytes nobody receives.
+  libraryFile = target:
+    if lib.hasInfix "-windows-" target then "${library}.dll" else "lib${library}.so";
 
   # importCargoLock writes the cargo configuration that serves every crate
   # from the vendored set, including a replacement section per git source,
@@ -136,7 +136,7 @@ let
       # Linux and GNU Windows go through cargo-zigbuild, which configures
       # the compiler, archiver, and linker from the same zig itself.
       viaZigbuild = t ? zigTarget;
-      outputs = outputsFor target;
+      shipped = libraryFile target;
     in stdenvNoCC.mkDerivation ({
       name = "${name}-${target}";
       src = workspaceSrc;
@@ -212,19 +212,14 @@ let
       installPhase = ''
         runHook preInstall
         mkdir -p "$out/lib"
-        cp "$TMPDIR/target/${target}/release/${builtins.head outputs}" "$out/lib/"
-        for name in ${lib.escapeShellArgs (builtins.tail outputs)}; do
-          [ -e "$TMPDIR/target/${target}/release/$name" ] && cp "$TMPDIR/target/${target}/release/$name" "$out/lib/"
-        done
+        cp "$TMPDIR/target/${target}/release/${shipped}" "$out/lib/"
         # Remapping covers paths the compiler records, not strings a crate
         # makes from env!("CARGO_MANIFEST_DIR") or env!("OUT_DIR"); those
         # would differ per host, so fail here rather than drift. The Linux
         # sandbox's /build is the canonical form, so only another build
-        # directory can tell host-specific strings apart. The dynamic
-        # library is what ships and what the lock records; the static one
-        # beside it is not checked here, though CI compares it across hosts.
+        # directory can tell host-specific strings apart.
         if [ "$TMPDIR" != /build ]; then
-          file=$out/lib/${builtins.head outputs}
+          file=$out/lib/${shipped}
           if grep -a -q -F -e "$PWD" -e "$TMPDIR/target" -e "$TMPDIR/vendor" "$file"; then
             echo "$file embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
             exit 1
