@@ -80,8 +80,29 @@ let
       "$1" -vV | sed 's/^host: .*/host: ${fixedHost}/'
       exit "''${PIPESTATUS[0]}"
     fi
+    # Cargo's query for the host's configuration, the one --print=cfg
+    # without --target, also answers dnix_host; see host-graph.py.
+    if [[ " $* " == *" --print=cfg "* && " $* " != *" --target "* && " $* " != *" --target="* ]]; then
+      # rustc answers the queries in order, so cfg must be the last one
+      # for dnix_host to land in its answer.
+      last=
+      for arg in "$@"; do
+        case "$arg" in --print=*) last=$arg ;; esac
+      done
+      if [ "$last" != "--print=cfg" ]; then
+        echo "dnix: Cargo no longer asks for the host's cfg last; update rust.nix: $*" >&2
+        exit 1
+      fi
+      "$@" || exit
+      echo dnix_host
+      exit 0
+    fi
     exec "$@"
   '';
+
+  # The machines dnix builds on. A platform condition in a vendored manifest
+  # that differs between them is widened for build-time dependencies.
+  buildHosts = [ "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu" "x86_64-apple-darwin" "aarch64-apple-darwin" ];
 
   targetVariable = target: builtins.replaceStrings [ "-" ] [ "_" ] target;
 
@@ -127,6 +148,11 @@ let
         vendor=$TMPDIR/vendor
         cp -RL ${vendor} "$vendor"
         chmod -R u+w "$vendor"
+        mkdir -p "$TMPDIR/build-hosts"
+        for host in ${lib.escapeShellArgs buildHosts}; do
+          rustc --print cfg --target "$host" > "$TMPDIR/build-hosts/$host"
+        done
+        ${pkgs.python3}/bin/python3 ${./host-graph.py} "$vendor" "$TMPDIR"/build-hosts/*
         ${cargoConfig}
         ${t.prepare}
 
