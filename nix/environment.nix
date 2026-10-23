@@ -171,6 +171,7 @@ let
   }).androidsdk;
   ndkHost = if isDarwin then "darwin-x86_64" else "linux-x86_64";
   ndkBin = "${androidSdk}/libexec/android-sdk/ndk-bundle/toolchains/llvm/prebuilt/${ndkHost}/bin";
+  ndkSysroot = "${androidSdk}/libexec/android-sdk/ndk-bundle/toolchains/llvm/prebuilt/${ndkHost}/sysroot";
   # Google compiles each NDK host package's crtbegin objects with that
   # package's own clang, so the darwin and Linux packages ship different
   # bytes for them, and crtbegin_so.o is linked into every shared library.
@@ -407,6 +408,10 @@ let
     prepare = ''
       export ANDROID_NDK_ROOT=${androidSdk}/libexec/android-sdk/ndk-bundle
       export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+      # bindgen reads the headers the NDK's clang compiles against, as
+      # cargo-zigbuild arranges for the Linux targets, and not whatever
+      # a search of the build machine turns up.
+      export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=${ndkSysroot}"
     '';
   };
   cmakeProcessor = target: if windowsArch target == "aarch64" then "ARM64" else "AMD64";
@@ -515,6 +520,12 @@ in
     # Xcode or Command Line Tools copy on macOS, so builds would fail on
     # one host and depend on the other's Xcode.
     export LIBCLANG_PATH=${llvm.libclang.lib}/lib
+    # bindgen also runs a clang to learn its header directories and puts
+    # them ahead of libclang's own. Left to look, it found Xcode's clang
+    # on macOS and none on Linux, so the same headers gave different
+    # bindings; the clang that belongs to the libclang above answers the
+    # same everywhere.
+    export CLANG_PATH=${llvm.libclang}/bin/clang
     dnix_cflags=()
     dnix_include_dirs=()
     dnix_lib_dirs=()
