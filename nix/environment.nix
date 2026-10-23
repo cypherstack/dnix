@@ -510,6 +510,11 @@ in
     export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-global
     export ZIG_LOCAL_CACHE_DIR=$TMPDIR/zig-local
     export SOURCE_DATE_EPOCH=0
+    # bindgen loads libclang at build time. Without this it searches the
+    # host, which finds nothing in the Linux sandbox and the Mac's own
+    # Xcode or Command Line Tools copy on macOS, so builds would fail on
+    # one host and depend on the other's Xcode.
+    export LIBCLANG_PATH=${llvm.libclang.lib}/lib
     dnix_cflags=()
     dnix_include_dirs=()
     dnix_lib_dirs=()

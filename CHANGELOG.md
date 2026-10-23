@@ -25,6 +25,9 @@
   released; a library that fails to load fails the run with the reason.
   Each host job may run for four hours instead of two.
 * The workflows pin every action to a commit, the publishing job's included.
+* bindgen loads libclang from the pinned LLVM. A crate that generates
+  bindings no longer fails to build on Linux, where the sandbox has no
+  libclang, nor depends on the Mac's Xcode or Command Line Tools on macOS.
 
 ## 0.1.0
 
