@@ -205,16 +205,20 @@ jobs:
           cp -RL result/. "$workspace/out/"
       # The run's only Windows machine loads each x64 library the way an
       # application does, so one that cannot load is never released. The
-      # arm64 libraries cannot load on this x64 host.
+      # arm64 libraries cannot load on this x64 host. The list comes from
+      # the build's own checksums, so a library that is missing fails here.
       - name: Load the x64 Windows libraries
         shell: pwsh
         working-directory: out
         run: |
-          $libraries = @(Get-ChildItem -Path x86_64-pc-windows-*/*.dll -ErrorAction SilentlyContinue)
+          $libraries = @(foreach ($line in Get-Content SHA256SUMS) {
+            if ($line -match '^\S+\s+\./(x86_64-pc-windows-[^/]+/[^/]+\.dll)$') { $Matches[1] }
+          })
           foreach ($library in $libraries) {
-            $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($library.FullName)
+            $path = (Resolve-Path -LiteralPath ($library -replace '/', '\')).Path
+            $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($path)
             [System.Runtime.InteropServices.NativeLibrary]::Free($handle)
-            "Loaded $($library.Directory.Name)/$($library.Name)"
+            "::notice::Loaded $library on Windows."
           }
           if ($libraries.Count -eq 0) { 'No x64 Windows library to load.' }
       - uses: actions/upload-artifact@v7
