@@ -35,8 +35,9 @@ first), Android across two (aarch64 Linux has no NDK), and Apple libraries
 across two builds on one Mac. Apple bytes are proven across Macs only when
 the lock was written on a different Mac than CI's, or when someone runs
 `verify_release` elsewhere. The Windows host also loads every x64 Windows
-library, which runs its initialisation and resolves its imports; nothing
-loads the arm64 ones, which an x64 host cannot.
+library the package lists, which runs its initialisation and resolves its
+imports against Windows' own DLLs; nothing loads the arm64 ones, which an
+x64 host cannot.
 
 On a push to the default branch, if the lock names a release that does not
 exist yet, a final job uploads the dynamic libraries from the artifacts the

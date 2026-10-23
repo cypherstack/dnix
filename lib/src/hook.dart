@@ -160,17 +160,17 @@ void checkFloors(CodeConfig code, DnixConfig config) {
       'macOS',
       code.macOS.targetVersion,
       config.macOSFloor,
-      'Flutter asks every native asset for macOS ${code.macOS.targetVersion}, '
-          'whatever the application targets, so "floors.macos" in '
-          '${DnixConfig.fileName} must not be above it.',
+      'This build asks every native asset for macOS '
+          '${code.macOS.targetVersion}, whatever the application targets, so '
+          '${config.name} must lower "floors.macos" in ${DnixConfig.fileName}.',
     ),
     OS.iOS => (
       'iOS',
       code.iOS.targetVersion,
       config.iOSFloor,
-      'Flutter asks every native asset for iOS ${code.iOS.targetVersion}, '
-          'whatever the application targets, so "floors.ios" in '
-          '${DnixConfig.fileName} must not be above it.',
+      'This build asks every native asset for iOS '
+          '${code.iOS.targetVersion}, whatever the application targets, so '
+          '${config.name} must lower "floors.ios" in ${DnixConfig.fileName}.',
     ),
     OS.android => (
       'Android API',

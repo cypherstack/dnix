@@ -1,7 +1,9 @@
 import 'dart:io';
 
+import 'package:code_assets/code_assets.dart';
 import 'package:dnix/dnix.dart';
 import 'package:dnix/src/hook.dart';
+import 'package:hooks/hooks.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -94,4 +96,90 @@ void gitTests() {
       expect(files, {'native/Cargo.toml', 'native/src/lib.rs'});
     },
   );
+
+  group('checkFloors', () {
+    late Directory root;
+    late DnixConfig config;
+
+    setUp(() async {
+      root = await Directory.systemTemp.createTemp('dnix-floors-');
+      File('${root.path}/dnix.json').writeAsStringSync(
+        '{"name": "demo", "rust": {"workspace": ".", "crate": "x"}, '
+        '"floors": {"ios": 15, "macos": 14, "android": 26}}',
+      );
+      config = DnixConfig.load(root.uri);
+    });
+    tearDown(() => root.delete(recursive: true));
+
+    CodeConfig code(OS os, int version) {
+      final builder = BuildInputBuilder()
+        ..setupShared(
+          packageRoot: root.uri,
+          packageName: 'demo',
+          outputDirectoryShared: root.uri.resolve('shared/'),
+          outputFile: root.uri.resolve('output.json'),
+        )
+        ..config.setupBuild(linkingEnabled: false)
+        ..addExtension(
+          CodeAssetExtension(
+            targetArchitecture: Architecture.arm64,
+            targetOS: os,
+            linkModePreference: LinkModePreference.dynamic,
+            iOS: os == OS.iOS
+                ? IOSCodeConfig(
+                    targetSdk: IOSSdk.iPhoneOS,
+                    targetVersion: version,
+                  )
+                : null,
+            macOS: os == OS.macOS
+                ? MacOSCodeConfig(targetVersion: version)
+                : null,
+            android: os == OS.android
+                ? AndroidCodeConfig(targetNdkApi: version)
+                : null,
+          ),
+        );
+      return builder.build().config.code;
+    }
+
+    test('lets a build at or above the floors through', () {
+      checkFloors(code(OS.iOS, 15), config);
+      checkFloors(code(OS.macOS, 15), config);
+      checkFloors(code(OS.android, 26), config);
+    });
+
+    test('says what to change for each platform below its floor', () {
+      void fails(CodeConfig code, String message) => expect(
+        () => checkFloors(code, config),
+        throwsA(
+          isA<DnixException>().having(
+            (error) => error.message,
+            'message',
+            contains(message),
+          ),
+        ),
+      );
+      fails(
+        code(OS.iOS, 13),
+        'demo libraries support iOS 15 and later; this build targets iOS 13.'
+        ' This build asks every native asset for iOS 13, whatever the '
+        'application targets, so demo must lower "floors.ios" in dnix.json.',
+      );
+      fails(code(OS.macOS, 13), 'demo must lower "floors.macos" in dnix.json.');
+      fails(
+        code(OS.android, 24),
+        'this build targets Android API 24. '
+        "Raise the application's minSdkVersion.",
+      );
+    });
+
+    test('the default floors admit what Flutter 3.47 asks for', () {
+      File('${root.path}/dnix.json').writeAsStringSync(
+        '{"name": "demo", "rust": {"workspace": ".", "crate": "x"}}',
+      );
+      final defaults = DnixConfig.load(root.uri);
+      checkFloors(code(OS.iOS, 13), defaults);
+      checkFloors(code(OS.macOS, 13), defaults);
+    });
+  });
 }

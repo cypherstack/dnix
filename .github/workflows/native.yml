@@ -203,24 +203,31 @@ jobs:
           done
           mkdir -p "$workspace/out"
           cp -RL result/. "$workspace/out/"
-      # The run's only Windows machine loads each x64 library the way an
-      # application does, so one that cannot load is never released. The
-      # arm64 libraries cannot load on this x64 host. The list comes from
-      # the build's own checksums, so a library that is missing fails here.
+      # The run's only Windows machine loads each x64 library the package
+      # lists, which runs its initialisation and resolves its imports, so one
+      # that cannot load is never released. Imports resolve against Windows'
+      # own directories only: the runner's PATH holds MinGW and other runtimes
+      # an end user does not have. The arm64 libraries cannot load on this
+      # x64 host.
       - name: Load the x64 Windows libraries
         shell: pwsh
         working-directory: out
+        timeout-minutes: 5
         run: |
-          $libraries = @(foreach ($line in Get-Content SHA256SUMS) {
-            if ($line -match '^\S+\s+\./(x86_64-pc-windows-[^/]+/[^/]+\.dll)$') { $Matches[1] }
-          })
-          foreach ($library in $libraries) {
-            $path = (Resolve-Path -LiteralPath ($library -replace '/', '\')).Path
-            $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($path)
-            [System.Runtime.InteropServices.NativeLibrary]::Free($handle)
+          $config = Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE '${{ inputs.package-dir }}/dnix.json') | ConvertFrom-Json
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          foreach ($target in @($config.targets | Where-Object { $_ -like 'x86_64-pc-windows-*' })) {
+            $library = "$target/$($config.library).dll"
+            try {
+              $path = (Resolve-Path -LiteralPath ($library -replace '/', '\')).Path
+              $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($path)
+              [System.Runtime.InteropServices.NativeLibrary]::Free($handle)
+            } catch {
+              "::error::Could not load $library on Windows: $($_.Exception.Message)"
+              exit 1
+            }
             "::notice::Loaded $library on Windows."
           }
-          if ($libraries.Count -eq 0) { 'No x64 Windows library to load.' }
       - uses: actions/upload-artifact@v7
         with:
           name: sums-windows-wsl2${{ inputs.artifact-suffix }}
