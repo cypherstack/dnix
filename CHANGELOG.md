@@ -24,6 +24,7 @@
   resolving imports against Windows' own DLLs only, before anything is
   released; a library that fails to load fails the run with the reason.
   Each host job may run for four hours instead of two.
+* The workflows pin every action to a commit, the publishing job's included.
 
 ## 0.1.0
 
