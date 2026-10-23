@@ -81,11 +81,13 @@ let
     mkdir -p $out/lib
     $CC -O2 -shared -fPIC -o $out/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary} ${./stable-qsort.c}
   '';
-  preload = if isDarwin then "DYLD_INSERT_LIBRARIES" else "LD_PRELOAD";
+  # Set on each rustc command and never exported: another program given it
+  # would load the library too, and macOS's own tools, which are arm64e,
+  # refuse an arm64 library and abort.
+  withStableQsort = "${if isDarwin then "DYLD_INSERT_LIBRARIES" else "LD_PRELOAD"}=${stableQsort}/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
   rustcWrapper = pkgs.writeShellScript "rustc-fixed-host" ''
-    export ${preload}=${stableQsort}/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}
     if [ "$#" -eq 2 ] && [ "$2" = "-vV" ]; then
-      "$1" -vV | sed 's/^host: .*/host: ${fixedHost}/'
+      ${withStableQsort} "$1" -vV | sed 's/^host: .*/host: ${fixedHost}/'
       exit "''${PIPESTATUS[0]}"
     fi
     # Cargo's query for the host's configuration, the one --print=cfg
@@ -101,11 +103,11 @@ let
         echo "dnix: Cargo no longer asks for the host's cfg last; update rust.nix: $*" >&2
         exit 1
       fi
-      "$@" || exit
+      ${withStableQsort} "$@" || exit
       echo dnix_host
       exit 0
     fi
-    exec "$@"
+    ${withStableQsort} exec "$@"
   '';
 
   # The machines dnix builds on. A platform condition in a vendored manifest
