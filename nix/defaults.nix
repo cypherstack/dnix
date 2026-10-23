@@ -21,9 +21,11 @@
       sha256 = "dfb20d396df28ca02a8c708314b814a4d961dc9074f9a161932746f815aa552f";
     };
   };
+  # Flutter 3.47 asks native assets for iOS 13 and writes 13.0 into their
+  # frameworks, so a higher iOS floor can never be used.
   floors = {
     macos = 12;
-    ios = 15;
+    ios = 13;
     android = 24;
     glibc = "2.28";
   };

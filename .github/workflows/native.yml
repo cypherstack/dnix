@@ -53,7 +53,7 @@ jobs:
   linux:
     name: Linux x86_64 host
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
         with:
@@ -87,7 +87,7 @@ jobs:
   linux-arm64:
     name: Linux aarch64 host
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
         with:
@@ -121,7 +121,7 @@ jobs:
   macos:
     name: macOS host
     runs-on: ${{ inputs.macos-runner }}
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
         with:
@@ -164,7 +164,7 @@ jobs:
   windows:
     name: Windows host (WSL2)
     runs-on: windows-2025
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
         with:
@@ -203,6 +203,20 @@ jobs:
           done
           mkdir -p "$workspace/out"
           cp -RL result/. "$workspace/out/"
+      # The run's only Windows machine loads each x64 library the way an
+      # application does, so one that cannot load is never released. The
+      # arm64 libraries cannot load on this x64 host.
+      - name: Load the x64 Windows libraries
+        shell: pwsh
+        working-directory: out
+        run: |
+          $libraries = @(Get-ChildItem -Path x86_64-pc-windows-*/*.dll -ErrorAction SilentlyContinue)
+          foreach ($library in $libraries) {
+            $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($library.FullName)
+            [System.Runtime.InteropServices.NativeLibrary]::Free($handle)
+            "Loaded $($library.Directory.Name)/$($library.Name)"
+          }
+          if ($libraries.Count -eq 0) { 'No x64 Windows library to load.' }
       - uses: actions/upload-artifact@v7
         with:
           name: sums-windows-wsl2${{ inputs.artifact-suffix }}

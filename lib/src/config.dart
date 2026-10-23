@@ -209,8 +209,9 @@ class DnixConfig {
   /// Lowest macOS major version the libraries support.
   int get macOSFloor => _floor('macos', 12);
 
-  /// Lowest iOS major version the libraries support.
-  int get iOSFloor => _floor('ios', 15);
+  /// Lowest iOS major version the libraries support. Flutter 3.47 asks
+  /// native assets for iOS 13, so the default is 13.
+  int get iOSFloor => _floor('ios', 13);
 
   /// Lowest Android API level the libraries support.
   int get androidApiFloor => _floor('android', 24);

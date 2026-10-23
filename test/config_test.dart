@@ -44,7 +44,7 @@ void main() {
     expect(config.targets, ['x86_64-unknown-linux-gnu']);
     expect(config.androidApiFloor, 26);
     expect(config.macOSFloor, 12);
-    expect(config.iOSFloor, 15);
+    expect(config.iOSFloor, 13);
   });
 
   test('the repository URL is normalized', () {

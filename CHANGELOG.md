@@ -15,6 +15,12 @@
 * zig compiles C without its debug-mode sanitizer. A library whose C was
   compiled with no optimisation level changes bytes; one compiled with
   `-O1` or higher does not.
+* The default iOS floor is 13, the version Flutter 3.47 asks native assets
+  for. With the former default, 15, the hook refused every iOS build; the
+  fixture's iOS libraries change bytes. The floor error now says what to
+  change for each platform.
+* The Windows host in CI loads every x64 Windows library before anything is
+  released, and each host job may run for four hours instead of two.
 
 ## 0.1.0
 
