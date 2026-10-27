@@ -53,12 +53,12 @@ jobs:
   linux:
     name: Linux x86_64 host
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Build every target this host can build
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
         shell: bash
@@ -78,7 +78,7 @@ jobs:
       - name: Collect outputs
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
         run: mkdir -p out && cp -RL result/. out/
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sums-linux-x86_64${{ inputs.artifact-suffix }}
           path: ${{ inputs.flake-dir || inputs.package-dir }}/out
@@ -87,12 +87,12 @@ jobs:
   linux-arm64:
     name: Linux aarch64 host
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Build every target this host can build
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
         shell: bash
@@ -112,7 +112,7 @@ jobs:
       - name: Collect outputs
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
         run: mkdir -p out && cp -RL result/. out/
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sums-linux-aarch64${{ inputs.artifact-suffix }}
           path: ${{ inputs.flake-dir || inputs.package-dir }}/out
@@ -121,12 +121,12 @@ jobs:
   macos:
     name: macOS host
     runs-on: ${{ inputs.macos-runner }}
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Build every sandboxed target
         working-directory: ${{ inputs.flake-dir || inputs.package-dir }}
         shell: bash
@@ -155,7 +155,7 @@ jobs:
           nix develop '.#${{ inputs.attr-prefix }}apple' --command dnix-apple-build "$PWD/out"
           nix develop '.#${{ inputs.attr-prefix }}apple' --command dnix-apple-build "$PWD/out-again"
           diff out/SHA256SUMS.apple out-again/SHA256SUMS.apple
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sums-macos-arm64${{ inputs.artifact-suffix }}
           path: ${{ inputs.flake-dir || inputs.package-dir }}/out
@@ -164,12 +164,12 @@ jobs:
   windows:
     name: Windows host (WSL2)
     runs-on: windows-2025
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Vampire/setup-wsl@v7
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
         with:
           distribution: Ubuntu-24.04
           wsl-version: 2
@@ -203,7 +203,32 @@ jobs:
           done
           mkdir -p "$workspace/out"
           cp -RL result/. "$workspace/out/"
-      - uses: actions/upload-artifact@v7
+      # The run's only Windows machine loads each x64 library the package
+      # lists, which runs its initialisation and resolves its imports, so one
+      # that cannot load is never released. Imports resolve against Windows'
+      # own directories only: the runner's PATH holds MinGW and other runtimes
+      # an end user does not have. The arm64 libraries cannot load on this
+      # x64 host.
+      - name: Load the x64 Windows libraries
+        shell: pwsh
+        working-directory: out
+        timeout-minutes: 5
+        run: |
+          $config = Get-Content -Raw -LiteralPath (Join-Path $env:GITHUB_WORKSPACE '${{ inputs.package-dir }}/dnix.json') | ConvertFrom-Json
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          foreach ($target in @($config.targets | Where-Object { $_ -like 'x86_64-pc-windows-*' })) {
+            $library = "$target/$($config.library).dll"
+            try {
+              $path = (Resolve-Path -LiteralPath ($library -replace '/', '\')).Path
+              $handle = [System.Runtime.InteropServices.NativeLibrary]::Load($path)
+              [System.Runtime.InteropServices.NativeLibrary]::Free($handle)
+            } catch {
+              "::error::Could not load $library on Windows: $($_.Exception.Message)"
+              exit 1
+            }
+            "::notice::Loaded $library on Windows."
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sums-windows-wsl2${{ inputs.artifact-suffix }}
           path: out
@@ -228,19 +253,19 @@ jobs:
           jq -r 'to_entries[] | select(.value.result != "success")
             | "::error::The \(.key) host job \(.value.result). Fix that first; the lock is checked only when every host built."' <<< "$RESULTS"
           exit 1
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # dnix's own tools, at the revision of this workflow file. The github
       # context belongs to the calling run; the job context names the
       # repository and commit the reusable workflow came from.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .dnix
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           # Exactly this call's four artifacts, whatever else the run holds.
           pattern: sums-{linux-x86_64,linux-aarch64,macos-arm64,windows-wsl2}${{ inputs.artifact-suffix }}
@@ -249,7 +274,7 @@ jobs:
         run: find artifacts -maxdepth 3 | sort
       - name: Every target built on more than one host must match
         run: .dnix/tool/compare_sums.sh artifacts
-      - uses: dart-lang/setup-dart@v1
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
         with:
           sdk: ${{ inputs.dart-sdk }}
       - name: The committed dnix.lock must be what the source builds to
@@ -286,7 +311,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: sums-{linux-x86_64,linux-aarch64,macos-arm64,windows-wsl2}${{ inputs.artifact-suffix }}
           path: artifacts

@@ -155,22 +155,37 @@ String pinnedHash(DnixLock lock, String target, String fileName) {
 /// Fails when the consumer's deployment target is below the floor the
 /// libraries are built for, since such a build could not match the release.
 void checkFloors(CodeConfig code, DnixConfig config) {
-  final (String, num, int)? check = switch (code.targetOS) {
-    OS.macOS => ('macOS', code.macOS.targetVersion, config.macOSFloor),
-    OS.iOS => ('iOS', code.iOS.targetVersion, config.iOSFloor),
+  final (String, num, int, String)? check = switch (code.targetOS) {
+    OS.macOS => (
+      'macOS',
+      code.macOS.targetVersion,
+      config.macOSFloor,
+      'This build asks every native asset for macOS '
+          '${code.macOS.targetVersion}, whatever the application targets, so '
+          '${config.name} must lower "floors.macos" in ${DnixConfig.fileName}.',
+    ),
+    OS.iOS => (
+      'iOS',
+      code.iOS.targetVersion,
+      config.iOSFloor,
+      'This build asks every native asset for iOS '
+          '${code.iOS.targetVersion}, whatever the application targets, so '
+          '${config.name} must lower "floors.ios" in ${DnixConfig.fileName}.',
+    ),
     OS.android => (
       'Android API',
       code.android.targetNdkApi,
       config.androidApiFloor,
+      "Raise the application's minSdkVersion.",
     ),
     _ => null,
   };
   if (check == null) return;
-  final (platform, actual, floor) = check;
+  final (platform, actual, floor, remedy) = check;
   if (actual < floor) {
     throw DnixException(
       '${config.name} libraries support $platform $floor and later; this '
-      'build targets $platform $actual. Raise the deployment target.',
+      'build targets $platform $actual. $remedy',
     );
   }
 }

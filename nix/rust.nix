@@ -75,23 +75,54 @@ let
   # name is a real triple that is never a build target here, so no target
   # configuration can be mistaken for host configuration.
   fixedHost = "x86_64-unknown-linux-musl";
+  # A qsort that sorts the same on every build host, loaded into rustc;
+  # see stable-qsort.c.
+  stableQsort = pkgs.runCommandCC "dnix-stable-qsort" { } ''
+    mkdir -p $out/lib
+    $CC -O2 -shared -fPIC -o $out/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary} ${./stable-qsort.c}
+  '';
+  # Set on each rustc command and never exported: another program given it
+  # would load the library too, and macOS's own tools, which are arm64e,
+  # refuse an arm64 library and abort.
+  withStableQsort = "${if isDarwin then "DYLD_INSERT_LIBRARIES" else "LD_PRELOAD"}=${stableQsort}/lib/libstable-qsort${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
   rustcWrapper = pkgs.writeShellScript "rustc-fixed-host" ''
     if [ "$#" -eq 2 ] && [ "$2" = "-vV" ]; then
-      "$1" -vV | sed 's/^host: .*/host: ${fixedHost}/'
+      ${withStableQsort} "$1" -vV | sed 's/^host: .*/host: ${fixedHost}/'
       exit "''${PIPESTATUS[0]}"
     fi
-    exec "$@"
+    # Cargo's query for the host's configuration, the one --print=cfg
+    # without --target, also answers dnix_host; see host-graph.py.
+    if [[ " $* " == *" --print=cfg "* && " $* " != *" --target "* && " $* " != *" --target="* ]]; then
+      # rustc answers the queries in order, so cfg must be the last one
+      # for dnix_host to land in its answer.
+      last=
+      for arg in "$@"; do
+        case "$arg" in --print=*) last=$arg ;; esac
+      done
+      if [ "$last" != "--print=cfg" ]; then
+        echo "dnix: Cargo no longer asks for the host's cfg last; update rust.nix: $*" >&2
+        exit 1
+      fi
+      ${withStableQsort} "$@" || exit
+      echo dnix_host
+      exit 0
+    fi
+    ${withStableQsort} exec "$@"
   '';
+
+  # The machines dnix builds on. A platform condition in a vendored manifest
+  # that differs between them is widened for build-time dependencies.
+  buildHosts = [ "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu" "x86_64-apple-darwin" "aarch64-apple-darwin" ];
 
   targetVariable = target: builtins.replaceStrings [ "-" ] [ "_" ] target;
 
-  # The dynamic library first; the rest are copied when the crate builds them.
-  outputsFor = target:
-    if lib.hasSuffix "-windows-msvc" target
-    then [ "${library}.dll" "${library}.dll.lib" "${library}.lib" ]
-    else if lib.hasInfix "-windows-" target
-    then [ "${library}.dll" "lib${library}.dll.a" "lib${library}.a" ]
-    else [ "lib${library}.so" "lib${library}.a" ];
+  # The dynamic library, the one file a target ships and the lock records.
+  # A static library or import library the crate also builds is left
+  # behind: nothing uses it, and its member names and debug info carry the
+  # build directory and toolchain store paths, so keeping it would only
+  # make every comparison fail on bytes nobody receives.
+  libraryFile = target:
+    if lib.hasInfix "-windows-" target then "${library}.dll" else "lib${library}.so";
 
   # importCargoLock writes the cargo configuration that serves every crate
   # from the vendored set, including a replacement section per git source,
@@ -107,7 +138,7 @@ let
       # Linux and GNU Windows go through cargo-zigbuild, which configures
       # the compiler, archiver, and linker from the same zig itself.
       viaZigbuild = t ? zigTarget;
-      outputs = outputsFor target;
+      shipped = libraryFile target;
     in stdenvNoCC.mkDerivation ({
       name = "${name}-${target}";
       src = workspaceSrc;
@@ -124,9 +155,18 @@ let
         export CARGO_HOME=$TMPDIR/cargo-home
         mkdir -p "$CARGO_HOME"
         export RUSTC_WRAPPER=${rustcWrapper}
+        if [ "$(DNIX_STABLE_QSORT_CHECK=1 "$RUSTC_WRAPPER" rustc --version 2>&1 >/dev/null)" != dnix-stable-qsort ]; then
+          echo "dnix: rustc did not load ${stableQsort}, so the code it emits would depend on the build host's C library" >&2
+          exit 1
+        fi
         vendor=$TMPDIR/vendor
         cp -RL ${vendor} "$vendor"
         chmod -R u+w "$vendor"
+        mkdir -p "$TMPDIR/build-hosts"
+        for host in ${lib.escapeShellArgs buildHosts}; do
+          rustc --print cfg --target "$host" > "$TMPDIR/build-hosts/$host"
+        done
+        ${pkgs.python3}/bin/python3 ${./host-graph.py} "$vendor" "$TMPDIR"/build-hosts/*
         ${cargoConfig}
         ${t.prepare}
 
@@ -174,19 +214,14 @@ let
       installPhase = ''
         runHook preInstall
         mkdir -p "$out/lib"
-        cp "$TMPDIR/target/${target}/release/${builtins.head outputs}" "$out/lib/"
-        for name in ${lib.escapeShellArgs (builtins.tail outputs)}; do
-          [ -e "$TMPDIR/target/${target}/release/$name" ] && cp "$TMPDIR/target/${target}/release/$name" "$out/lib/"
-        done
+        cp "$TMPDIR/target/${target}/release/${shipped}" "$out/lib/"
         # Remapping covers paths the compiler records, not strings a crate
         # makes from env!("CARGO_MANIFEST_DIR") or env!("OUT_DIR"); those
         # would differ per host, so fail here rather than drift. The Linux
         # sandbox's /build is the canonical form, so only another build
-        # directory can tell host-specific strings apart. The dynamic
-        # library is what ships and what the lock records; the static one
-        # beside it is not checked here, though CI compares it across hosts.
+        # directory can tell host-specific strings apart.
         if [ "$TMPDIR" != /build ]; then
-          file=$out/lib/${builtins.head outputs}
+          file=$out/lib/${shipped}
           if grep -a -q -F -e "$PWD" -e "$TMPDIR/target" -e "$TMPDIR/vendor" "$file"; then
             echo "$file embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
             exit 1

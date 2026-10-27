@@ -21,7 +21,7 @@ The facts about the package that both the hook and the Nix build read.
 | `toolchains.rust` | The Rust version to build with, a stable release like `"1.99.1"`. Required. |
 | `toolchains.xcode` | The Xcode version for Apple targets. Default `"27.0"`; must match the `macos-runner` the workflow uses. `toolchains.xcodeBuild` optionally pins the build number too, like `"27A266a"`, which tells a beta from the release. |
 | `toolchains.*` | Overrides for the other pins: `zig`, `llvm`, `ndk`, `xwin`, `ndkLinux`. Defaults live in `nix/defaults.nix`. An MSVC Windows target fetches the SDK for x86_64 and arm64 together, whichever of the two it is for, so an `xwin` override gives the hash of a splat that holds both; the GNU Windows targets fetch no SDK. |
-| `floors` | Lowest supported `macos`, `ios`, `android` (API level) as integers, and `glibc` as a string. Defaults: 12, 15, 24, `"2.28"`. |
+| `floors` | Lowest supported `macos`, `ios`, `android` (API level) as integers, and `glibc` as a string. Defaults: 12, 13, 24, `"2.28"`. iOS and macOS cannot go above 13: Flutter 3.47 asks native assets for iOS 13 and macOS 13, and writes 13.0 into each iOS framework as its minimum. |
 | `paths` | Canonical path prefixes embedded instead of build directories: `workspace` (default `/<name>/<rust.workspace>`), `registry`, `registryIndex`. Defaults are fine. |
 
 Supported targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
@@ -74,8 +74,9 @@ Changing any of them means a new lock and a new release.
 
 ## What the crate needs
 
-- `crate-type` includes `cdylib`. The dynamic library is what ships; a
-  `staticlib` beside it is built and kept in CI artifacts but not released.
+- `crate-type` includes `cdylib`. The dynamic library is what ships and the
+  only file a build keeps; a `staticlib` or import library the crate also
+  builds is left behind.
 - A release profile that does not depend on toolchain defaults, like the
   fixture in `fixtures/rust/Cargo.toml`:
 
@@ -203,4 +204,6 @@ notices files that existed when it last ran: a `.dnix-build` created after
 a build takes effect once something else reruns the hook, such as touching
 `dnix.json`. Before the first lock exists every mode falls back to `dev`.
 The hook refuses static linking and refuses builds whose deployment target
-is below the floors, since those could not match the release.
+is below the floors, since those could not match the release. Flutter asks
+for iOS 13 and macOS 13 whatever the application's own deployment target,
+so floors above those make every Apple build fail.

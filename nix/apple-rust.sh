@@ -166,16 +166,15 @@ for target in "${targets[@]}"; do
     --manifest-path "$work/src/$manifest" \
     --target "$target" --target-dir "$work/target"
   mkdir -p "$out/$target"
-  for built in "$work/target/$target/release/lib$library.dylib" "$work/target/$target/release/lib$library.a"; do
-    [ -e "$built" ] || continue
-    # Remapping covers paths the compiler records, not strings a crate
-    # makes from env!("CARGO_MANIFEST_DIR") or env!("OUT_DIR").
-    if grep -a -q -F "$work" "$built"; then
-      echo "$built embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
-      exit 1
-    fi
-    cp "$built" "$out/$target/"
-  done
+  # Only the dynamic library ships; see libraryFile in rust.nix.
+  built="$work/target/$target/release/lib$library.dylib"
+  # Remapping covers paths the compiler records, not strings a crate
+  # makes from env!("CARGO_MANIFEST_DIR") or env!("OUT_DIR").
+  if grep -a -q -F "$work" "$built"; then
+    echo "$built embeds the build directory; a crate turns its manifest or output directory into a string, which no remap can fix" >&2
+    exit 1
+  fi
+  cp "$built" "$out/$target/"
 done
 
 (cd "$out" && find . -type f -path './*-apple-*' | sort | xargs shasum -a 256 > SHA256SUMS.apple)
