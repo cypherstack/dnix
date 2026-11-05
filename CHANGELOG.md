@@ -1,5 +1,18 @@
 ## Unreleased
 
+* Native Windows source and development builds invoke Nix through WSL2.
+  The hook translates paths, builds the requested non-Apple target, copies
+  the library back, and retains source mode's pinned hash verification.
+  The optional `wsl_distribution` user define selects a distribution;
+  otherwise the default is used. `verify_release`, and `update_lock` for
+  packages without Apple targets, also work from Windows through WSL2.
+  This changes only the Dart build runner; Nix recipes, native sources,
+  and expected library hashes are unchanged.
+
+* Source builds resolve the flake from the package directory, supporting
+  parent paths containing `#`. Windows source dependencies with non-ASCII
+  filenames are tracked correctly.
+
 * Three more Windows targets beside `x86_64-pc-windows-msvc`:
   `x86_64-pc-windows-gnullvm` and `aarch64-pc-windows-gnullvm` build with zig's
   MinGW-w64 toolchain, for C and C++ dependencies that need GCC-style flags,

@@ -75,6 +75,9 @@ void gitTests() {
       for (final path in [
         'native/Cargo.toml',
         'native/src/lib.rs',
+        'native/src/café_λ.rs',
+        'native/src/100% done.rs',
+        if (!Platform.isWindows) r'native/src/back\slash.rs',
         'native/src/gone.rs',
         'native/untracked.rs',
         'native/target/debug/libx.so',
@@ -89,11 +92,17 @@ void gitTests() {
       await git(['init', '-q']);
       await git(['add', 'native/Cargo.toml', 'native/src', 'dnix.json']);
       File('${root.path}/native/src/gone.rs').deleteSync();
-      final files = sourceFiles(
-        root.uri,
-        DnixConfig.load(root.uri),
-      ).map((uri) => uri.path.substring(root.uri.path.length)).toSet();
-      expect(files, {'native/Cargo.toml', 'native/src/lib.rs'});
+      final files = sourceFiles(root.uri, DnixConfig.load(root.uri)).toSet();
+      expect(files, {
+        for (final path in [
+          'native/Cargo.toml',
+          'native/src/lib.rs',
+          'native/src/café_λ.rs',
+          'native/src/100% done.rs',
+          if (!Platform.isWindows) r'native/src/back\slash.rs',
+        ])
+          File('${root.path}/$path').uri,
+      });
     },
   );
 

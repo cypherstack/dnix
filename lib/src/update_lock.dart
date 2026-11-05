@@ -29,11 +29,6 @@ Future<int> updateLock(List<String> args) async {
 }
 
 Future<int> _update() async {
-  if (Platform.isWindows) {
-    throw DnixException(
-      'This needs Nix, which runs on Windows inside WSL2. Run it there.',
-    );
-  }
   final root = DnixConfig.findRoot();
   final config = DnixConfig.load(root);
   if (config.targets.any(isAppleTarget) && !Platform.isMacOS) {

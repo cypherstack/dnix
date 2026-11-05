@@ -102,8 +102,9 @@ else
 fi
 ```
 
-Windows runners can only use `prebuilt`, so skip the tests there until the
-release exists.
+Windows runners without WSL2 and Nix can only use `prebuilt`, so skip the
+tests there until the release exists. Configured runners can use `source`
+through the native Windows hook's WSL handoff.
 
 ## Before publishing to pub.dev
 
@@ -124,8 +125,8 @@ dart tool/verify_release.dart linux    # or android, windows, macos, ios, or a t
 
 Rebuilds that platform with Nix and compares each library with the lock.
 The Apple targets use the Xcode bundle under `/Applications` that reports
-the pinned version, whatever `xcode-select` points at. Inside WSL2 this
-covers the Linux, Android, and Windows targets.
+the pinned version, whatever `xcode-select` points at. On Windows the tool
+invokes Nix in the default WSL2 distribution for non-Apple targets.
 
 ## Bumping dnix, Rust, or nixpkgs
 

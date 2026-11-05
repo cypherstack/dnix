@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:code_assets/code_assets.dart';
@@ -110,6 +111,7 @@ Future<void> _build(BuildInput input, BuildOutputBuilder output) async {
         fileName: fileName,
         outputDirectory: input.outputDirectory,
         anyXcode: false,
+        wslDistribution: input.userDefines['wsl_distribution'],
       );
       verifyHash(
         bytes: file.readAsBytesSync(),
@@ -124,6 +126,7 @@ Future<void> _build(BuildInput input, BuildOutputBuilder output) async {
         fileName: fileName,
         outputDirectory: input.outputDirectory,
         anyXcode: true,
+        wslDistribution: input.userDefines['wsl_distribution'],
       );
       output.dependencies.addAll(sourceFiles(root, config).where(declared.add));
   }
@@ -144,9 +147,8 @@ String pinnedHash(DnixLock lock, String target, String fileName) {
     throw DnixException(
       'dnix.lock has no $fileName for $target: the package was locked '
       'without that target, and its maintainer adds it with update_lock. '
-      'Build mode "dev" builds it locally without a pinned hash, on Linux '
-      'or on an Apple Silicon Mac; a Windows process can only use a '
-      'prebuilt library.',
+      'Build mode "dev" builds it locally without a pinned hash, using '
+      'Nix on Linux, an Apple Silicon Mac, or WSL2 on Windows.',
     );
   }
   return expected;
@@ -202,11 +204,9 @@ void checkFloors(CodeConfig code, DnixConfig config) {
 /// as modified.
 Iterable<Uri> sourceFiles(Uri packageRoot, DnixConfig config) sync* {
   yield* existingFiles(packageRoot, ['flake.nix', 'flake.lock']);
-  final rootPath = Directory.fromUri(packageRoot).path
-      .replaceAll(RegExp(r'/+$'), '');
   for (final directory in config.sourceDirectories) {
-    final base = Directory(
-      directory == '.' ? rootPath : '$rootPath/$directory',
+    final base = Directory.fromUri(
+      packageRoot.resolveUri(Uri(path: '$directory/')),
     );
     if (!base.existsSync()) continue;
     yield* gitTrackedFiles(base) ?? _files(base, root: base);
@@ -221,7 +221,9 @@ List<Uri>? gitTrackedFiles(Directory directory) {
     result = Process.runSync(
       'git',
       ['-C', directory.path, 'ls-files', '-z', '--cached', '--', '.'],
-      stdoutEncoding: systemEncoding,
+      // Git emits UTF-8 paths with -z, including on Windows where the
+      // system encoding may otherwise turn them into nonexistent names.
+      stdoutEncoding: utf8,
       stderrEncoding: systemEncoding,
     );
   } on ProcessException {
@@ -230,13 +232,15 @@ List<Uri>? gitTrackedFiles(Directory directory) {
   if (result.exitCode != 0) return null;
   // Dart's own tool directory is written during a build, so even if it is
   // tracked it must not be an input.
-  return [
-    for (final name in (result.stdout as String).split('\u0000'))
-      if (name.isNotEmpty &&
-          !name.startsWith('.dart_tool/') &&
-          File('${directory.path}/$name').existsSync())
-        File('${directory.path}/$name').uri,
-  ];
+  final files = <Uri>[];
+  for (final name in (result.stdout as String).split('\u0000')) {
+    if (name.isEmpty || name.startsWith('.dart_tool/')) continue;
+    final file = File.fromUri(
+      directory.uri.resolveUri(Uri(pathSegments: name.split('/'))),
+    );
+    if (file.existsSync()) files.add(file.uri);
+  }
+  return files;
 }
 
 Iterable<Uri> _files(Directory directory, {required Directory root}) sync* {

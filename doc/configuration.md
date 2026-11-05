@@ -190,12 +190,11 @@ hooks:
 | Mode | What happens | Needs |
 |---|---|---|
 | `prebuilt` | Downloads the library of the release `dnix.lock` names and verifies its hash. | Dart only. |
-| `source` | Builds with Nix exactly as the release did and verifies the same hash. | Nix on Linux or an Apple Silicon Mac; the pinned Xcode for Apple targets. |
-| `dev` | Builds with Nix, skipping the Xcode pin and the hash check. | Nix on Linux or an Apple Silicon Mac. |
+| `source` | Builds with Nix exactly as the release did and verifies the same hash. | Nix on Linux, an Apple Silicon Mac, or WSL2 on Windows; the pinned Xcode for Apple targets. |
+| `dev` | Builds with Nix, skipping the Xcode pin and the hash check. | Nix on Linux, an Apple Silicon Mac, or WSL2 on Windows. |
 
-On Windows and on Intel Macs the hook can only use prebuilt libraries. Nix
-runs on Windows inside WSL2, where the tools work but the hook of a Windows
-Dart process does not.
+Intel Macs can only use prebuilt libraries. On Windows the hook invokes
+Nix inside WSL2 for non-Apple targets, as described below.
 
 In `source` and `dev` mode the hook declares the flake files and the
 workspace's files (the git-tracked ones in a checkout, which is what Nix
@@ -207,3 +206,45 @@ The hook refuses static linking and refuses builds whose deployment target
 is below the floors, since those could not match the release. Flutter asks
 for iOS 13 and macOS 13 whatever the application's own deployment target,
 so floors above those make every Apple build fail.
+
+### Windows source builds
+
+Install WSL2 with a Linux distribution and install Nix inside it. Flutter
+and Dart stay on Windows. In `source` and `dev` mode, dnix starts
+`wsl.exe`, translates the package and output paths with `wslpath`, and
+builds the requested target in Nix's Linux store. A Windows target still
+builds a Windows DLL. The library is copied back to the Windows hook
+output directory; `source` mode then checks its hash against `dnix.lock`
+before Flutter bundles it. A build or hash failure stops the hook.
+
+The build reads the checked-out native files, including local edits. Keep
+native text in LF form through the package's `.gitattributes`, and preserve
+any required symlinks and executable permissions. CI builds a fresh clone
+on WSL's Linux filesystem, so check for checkout differences when diagnosing
+a Windows-only hash mismatch. The expected hash remains the release hash.
+
+By default, dnix uses the default WSL distribution. Inspect installed
+distributions with `wsl.exe --list --verbose`, or select one per package:
+
+```yaml
+hooks:
+  user_defines:
+    frostdart:
+      build: source
+      wsl_distribution: Ubuntu-24.04
+```
+
+The selected distribution must be set up for WSL2, and must be able to
+access the package and output directories. Nix is found on its `PATH` or
+in `~/.nix-profile/bin`, `/nix/var/nix/profiles/default/bin`, or NixOS's
+`/run/current-system/sw/bin`, without loading login-shell profiles. The
+distribution's existing Nix configuration is retained, and flakes are
+enabled for the build. Configure proxies and other Nix environment settings
+inside the distribution; Windows environment variables are not forwarded
+automatically. The first build downloads Nix's pinned inputs; later builds
+reuse its store as usual.
+
+No separate application `dnix.lock` is needed. The package supplies the
+same flake, native sources, and expected hashes used on other hosts.
+Apple targets still require a Mac; Android targets need an x86_64 Linux
+distribution because the NDK is not available on Linux arm64.

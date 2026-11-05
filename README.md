@@ -122,7 +122,13 @@ dart tool/verify_release.dart linux
 | Linux aarch64 | yes | Linux and Windows targets |
 | macOS on Apple Silicon | yes | every target; Apple ones need Xcode 27.0 |
 | macOS on Intel | yes | no |
-| Windows | yes | no; inside WSL2 `verify_release` covers Linux, Android, and Windows targets, and locks come from CI |
+| Windows | yes | non-Apple targets through WSL2; the Linux host limits above apply |
+
+On Windows, install Nix inside a WSL2 Linux distribution. Native Windows
+Dart and Flutter invoke it through `wsl.exe`, then copy the built library
+back and verify its hash. The default WSL distribution is used unless the
+package's hook user defines specify `wsl_distribution`; see
+[Windows source builds](doc/configuration.md#windows-source-builds).
 
 ## More
 
