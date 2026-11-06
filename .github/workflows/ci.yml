@@ -17,9 +17,13 @@ permissions:
 
 jobs:
   dart:
-    name: Dart package
+    name: Dart package (code_assets ${{ matrix.code-assets }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        code-assets: [lowest, latest]
     permissions:
       contents: read
     steps:
@@ -30,9 +34,52 @@ jobs:
         with:
           sdk: '3.13.0'
       - run: dart pub get
+      - name: Resolve the oldest supported code_assets
+        if: matrix.code-assets == 'lowest'
+        run: dart pub downgrade code_assets
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart analyze --fatal-infos
       - run: dart test
+
+  windows-wsl:
+    name: Native Windows Dart to WSL2
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: '3.13.0'
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          set-as-default: 'true'
+          wsl-conf: |
+            [boot]
+            systemd=true
+          additional-packages: curl xz-utils git ca-certificates
+      - name: Install Nix inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          # Keep this installer pin in sync with native.yml.
+          curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix/tag/v3.11.2 \
+            | sh -s -- install linux --no-confirm
+      - name: Resolve dependencies with native Windows Dart
+        shell: pwsh
+        run: dart pub get
+      # Run Dart in Windows, so the smoke tests must call wsl.exe themselves.
+      # The tiny store fixture needs no compiler or native-library rebuild.
+      - name: Test the native Windows to WSL process and filesystem boundary
+        shell: pwsh
+        env:
+          DNIX_TEST_NIX: '1'
+          DNIX_TEST_WSL_DISTRIBUTION: Ubuntu-24.04
+        run: dart test --reporter expanded
 
   # The fixture crate goes through the same reusable workflow consumers use.
   fixture:

@@ -17,7 +17,11 @@ void main() {
       const gnuTarget = 'x86_64-pc-windows-gnullvm';
 
       setUp(() async {
-        root = await Directory.systemTemp.createTemp("dnix runner's # & ");
+        // The file URIs must be decoded exactly once before passing native
+        // paths to Nix or wsl.exe, preserving literal percent escapes.
+        root = await Directory.systemTemp.createTemp(
+          "dnix runner's # & café %20 %25 %2F ",
+        );
         final library = File('${root.path}/native/lib/wallet.dll');
         library.parent.createSync(recursive: true);
         library.writeAsBytesSync(bytes);
@@ -55,7 +59,35 @@ void main() {
           what: 'Nix runner output',
         );
         built.writeAsBytesSync([1]); // The copied output remains writable.
+        final rebuilt = await buildWithNix(
+          packageRoot: root.uri,
+          target: 'x86_64-pc-windows-msvc',
+          fileName: 'wallet.dll',
+          outputDirectory: root.uri.resolve('output/'),
+          anyXcode: false,
+        );
+        expect(rebuilt.readAsBytesSync(), bytes);
       });
+
+      test(
+        'selects the requested WSL distribution from native Windows',
+        () async {
+          final built = await buildWithNix(
+            packageRoot: root.uri,
+            target: gnuTarget,
+            fileName: 'wallet.dll',
+            outputDirectory: root.uri.resolve('output/'),
+            anyXcode: false,
+            wslDistribution: Platform.environment['DNIX_TEST_WSL_DISTRIBUTION'],
+          );
+          expect(built.readAsBytesSync(), bytes);
+        },
+        skip:
+            !Platform.isWindows ||
+                Platform.environment['DNIX_TEST_WSL_DISTRIBUTION'] == null
+            ? 'Set DNIX_TEST_WSL_DISTRIBUTION on native Windows.'
+            : false,
+      );
 
       test(
         'git sources include local edits and exclude untracked files',
@@ -124,6 +156,11 @@ Future<void> main(List<String> args) => buildNativeLibrary(args);
                     // Only Windows consumes this define. Other hosts must
                     // not validate a setting they do not use.
                     if (!Platform.isWindows) 'wsl_distribution': 24.04,
+                    if (Platform.isWindows &&
+                        Platform.environment['DNIX_TEST_WSL_DISTRIBUTION'] !=
+                            null)
+                      'wsl_distribution':
+                          Platform.environment['DNIX_TEST_WSL_DISTRIBUTION'],
                   },
                   basePath: root.uri,
                 ),

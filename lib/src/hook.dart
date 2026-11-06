@@ -157,20 +157,26 @@ String pinnedHash(DnixLock lock, String target, String fileName) {
 /// Fails when the consumer's deployment target is below the floor the
 /// libraries are built for, since such a build could not match the release.
 void checkFloors(CodeConfig code, DnixConfig config) {
+  // code_assets 1.2.1 has no deploymentVersion API. Keep its integer API
+  // while supporting both 1.x and 2.x; dnix's floors are integer majors.
   final (String, num, int, String)? check = switch (code.targetOS) {
     OS.macOS => (
       'macOS',
+      // ignore: deprecated_member_use
       code.macOS.targetVersion,
       config.macOSFloor,
       'This build asks every native asset for macOS '
+          // ignore: deprecated_member_use
           '${code.macOS.targetVersion}, whatever the application targets, so '
           '${config.name} must lower "floors.macos" in ${DnixConfig.fileName}.',
     ),
     OS.iOS => (
       'iOS',
+      // ignore: deprecated_member_use
       code.iOS.targetVersion,
       config.iOSFloor,
       'This build asks every native asset for iOS '
+          // ignore: deprecated_member_use
           '${code.iOS.targetVersion}, whatever the application targets, so '
           '${config.name} must lower "floors.ios" in ${DnixConfig.fileName}.',
     ),
@@ -206,7 +212,8 @@ Iterable<Uri> sourceFiles(Uri packageRoot, DnixConfig config) sync* {
   yield* existingFiles(packageRoot, ['flake.nix', 'flake.lock']);
   for (final directory in config.sourceDirectories) {
     final base = Directory.fromUri(
-      packageRoot.resolveUri(Uri(path: '$directory/')),
+      // The config holds a filesystem path, not an already-encoded URI.
+      packageRoot.resolveUri(Uri(pathSegments: [...directory.split('/'), ''])),
     );
     if (!base.existsSync()) continue;
     yield* gitTrackedFiles(base) ?? _files(base, root: base);

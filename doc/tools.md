@@ -57,11 +57,20 @@ registered. It requires no compiler toolchains or native-library rebuilds:
 DNIX_TEST_NIX=1 dart test test/nix_build_test.dart
 ```
 
+CI runs the smoke tests from native Windows Dart in PowerShell, with Nix
+installed in WSL2. They cover both the default and an explicitly selected
+distribution, paths containing spaces, Unicode and literal percent escapes,
+and replacing an existing output. The Dart analysis and unit tests also run
+with the oldest and latest supported `code_assets` versions.
+
 Run it from native Windows Dart to exercise the WSL handoff. In PowerShell,
 with Nix installed in the default WSL2 distribution:
 
 ```powershell
 $env:DNIX_TEST_NIX = '1'
+# Optional: also exercise explicit distribution selection.
+$env:DNIX_TEST_WSL_DISTRIBUTION = 'Ubuntu-24.04'
 dart test test/nix_build_test.dart
 Remove-Item Env:DNIX_TEST_NIX
+Remove-Item Env:DNIX_TEST_WSL_DISTRIBUTION
 ```

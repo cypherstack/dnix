@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:code_assets/code_assets.dart';
@@ -61,6 +62,26 @@ void main() {
       expect(files, {'flake.nix', 'flake.lock', 'Cargo.toml', 'dnix.json'});
     },
   );
+  for (final workspace in [
+    'native sources',
+    'native%20sources',
+    'native%25sources',
+    'native%2Fsources',
+    'native%2E%2E/sources',
+  ]) {
+    test('treats workspace $workspace as a literal filesystem path', () async {
+      final root = await Directory.systemTemp.createTemp('dnix %20 café ');
+      addTearDown(() => root.delete(recursive: true));
+      File('${root.path}/dnix.json').writeAsStringSync(
+        jsonEncode({
+          'rust': {'workspace': workspace, 'crate': 'x'},
+        }),
+      );
+      final source = File('${root.path}/$workspace/src/lib.rs')
+        ..createSync(recursive: true);
+      expect(sourceFiles(root.uri, DnixConfig.load(root.uri)), [source.uri]);
+    });
+  }
   gitTests();
 }
 
@@ -77,6 +98,7 @@ void gitTests() {
         'native/src/lib.rs',
         'native/src/café_λ.rs',
         'native/src/100% done.rs',
+        'native/src/encoded%20%25%2F.rs',
         if (!Platform.isWindows) r'native/src/back\slash.rs',
         'native/src/gone.rs',
         'native/untracked.rs',
@@ -99,6 +121,7 @@ void gitTests() {
           'native/src/lib.rs',
           'native/src/café_λ.rs',
           'native/src/100% done.rs',
+          'native/src/encoded%20%25%2F.rs',
           if (!Platform.isWindows) r'native/src/back\slash.rs',
         ])
           File('${root.path}/$path').uri,
@@ -137,11 +160,17 @@ void gitTests() {
             iOS: os == OS.iOS
                 ? IOSCodeConfig(
                     targetSdk: IOSSdk.iPhoneOS,
+                    // Exercise the API shared with code_assets 1.2.1.
+                    // ignore: deprecated_member_use
                     targetVersion: version,
                   )
                 : null,
             macOS: os == OS.macOS
-                ? MacOSCodeConfig(targetVersion: version)
+                ? MacOSCodeConfig(
+                    // Exercise the API shared with code_assets 1.2.1.
+                    // ignore: deprecated_member_use
+                    targetVersion: version,
+                  )
                 : null,
             android: os == OS.android
                 ? AndroidCodeConfig(targetNdkApi: version)
