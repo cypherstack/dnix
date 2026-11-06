@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:code_assets/code_assets.dart';
@@ -110,6 +111,7 @@ Future<void> _build(BuildInput input, BuildOutputBuilder output) async {
         fileName: fileName,
         outputDirectory: input.outputDirectory,
         anyXcode: false,
+        wslDistribution: input.userDefines['wsl_distribution'],
       );
       verifyHash(
         bytes: file.readAsBytesSync(),
@@ -124,6 +126,7 @@ Future<void> _build(BuildInput input, BuildOutputBuilder output) async {
         fileName: fileName,
         outputDirectory: input.outputDirectory,
         anyXcode: true,
+        wslDistribution: input.userDefines['wsl_distribution'],
       );
       output.dependencies.addAll(sourceFiles(root, config).where(declared.add));
   }
@@ -144,9 +147,8 @@ String pinnedHash(DnixLock lock, String target, String fileName) {
     throw DnixException(
       'dnix.lock has no $fileName for $target: the package was locked '
       'without that target, and its maintainer adds it with update_lock. '
-      'Build mode "dev" builds it locally without a pinned hash, on Linux '
-      'or on an Apple Silicon Mac; a Windows process can only use a '
-      'prebuilt library.',
+      'Build mode "dev" builds it locally without a pinned hash, using '
+      'Nix on Linux, an Apple Silicon Mac, or WSL2 on Windows.',
     );
   }
   return expected;
@@ -155,20 +157,26 @@ String pinnedHash(DnixLock lock, String target, String fileName) {
 /// Fails when the consumer's deployment target is below the floor the
 /// libraries are built for, since such a build could not match the release.
 void checkFloors(CodeConfig code, DnixConfig config) {
+  // code_assets 1.2.1 has no deploymentVersion API. Keep its integer API
+  // while supporting both 1.x and 2.x; dnix's floors are integer majors.
   final (String, num, int, String)? check = switch (code.targetOS) {
     OS.macOS => (
       'macOS',
+      // ignore: deprecated_member_use
       code.macOS.targetVersion,
       config.macOSFloor,
       'This build asks every native asset for macOS '
+          // ignore: deprecated_member_use
           '${code.macOS.targetVersion}, whatever the application targets, so '
           '${config.name} must lower "floors.macos" in ${DnixConfig.fileName}.',
     ),
     OS.iOS => (
       'iOS',
+      // ignore: deprecated_member_use
       code.iOS.targetVersion,
       config.iOSFloor,
       'This build asks every native asset for iOS '
+          // ignore: deprecated_member_use
           '${code.iOS.targetVersion}, whatever the application targets, so '
           '${config.name} must lower "floors.ios" in ${DnixConfig.fileName}.',
     ),
@@ -202,11 +210,10 @@ void checkFloors(CodeConfig code, DnixConfig config) {
 /// as modified.
 Iterable<Uri> sourceFiles(Uri packageRoot, DnixConfig config) sync* {
   yield* existingFiles(packageRoot, ['flake.nix', 'flake.lock']);
-  final rootPath = Directory.fromUri(packageRoot).path
-      .replaceAll(RegExp(r'/+$'), '');
   for (final directory in config.sourceDirectories) {
-    final base = Directory(
-      directory == '.' ? rootPath : '$rootPath/$directory',
+    final base = Directory.fromUri(
+      // The config holds a filesystem path, not an already-encoded URI.
+      packageRoot.resolveUri(Uri(pathSegments: [...directory.split('/'), ''])),
     );
     if (!base.existsSync()) continue;
     yield* gitTrackedFiles(base) ?? _files(base, root: base);
@@ -221,7 +228,9 @@ List<Uri>? gitTrackedFiles(Directory directory) {
     result = Process.runSync(
       'git',
       ['-C', directory.path, 'ls-files', '-z', '--cached', '--', '.'],
-      stdoutEncoding: systemEncoding,
+      // Git emits UTF-8 paths with -z, including on Windows where the
+      // system encoding may otherwise turn them into nonexistent names.
+      stdoutEncoding: utf8,
       stderrEncoding: systemEncoding,
     );
   } on ProcessException {
@@ -230,13 +239,15 @@ List<Uri>? gitTrackedFiles(Directory directory) {
   if (result.exitCode != 0) return null;
   // Dart's own tool directory is written during a build, so even if it is
   // tracked it must not be an input.
-  return [
-    for (final name in (result.stdout as String).split('\u0000'))
-      if (name.isNotEmpty &&
-          !name.startsWith('.dart_tool/') &&
-          File('${directory.path}/$name').existsSync())
-        File('${directory.path}/$name').uri,
-  ];
+  final files = <Uri>[];
+  for (final name in (result.stdout as String).split('\u0000')) {
+    if (name.isEmpty || name.startsWith('.dart_tool/')) continue;
+    final file = File.fromUri(
+      directory.uri.resolveUri(Uri(pathSegments: name.split('/'))),
+    );
+    if (file.existsSync()) files.add(file.uri);
+  }
+  return files;
 }
 
 Iterable<Uri> _files(Directory directory, {required Directory root}) sync* {

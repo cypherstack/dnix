@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dnix/src/exception.dart';
 import 'package:dnix/src/targets.dart';
+import 'package:dnix/src/wsl_build.dart';
 
 /// Builds [fileName] for [target] with the package's Nix flake and returns
 /// a writable copy at `<outputDirectory>/<target>/<fileName>`.
@@ -10,17 +11,26 @@ import 'package:dnix/src/targets.dart';
 /// Non-Apple targets are pure derivations of the flake. Apple targets need
 /// the host's Xcode, so they are built by the `dnix-apple-build` command of
 /// the flake's `apple` shell; [anyXcode] skips its pinned-version check.
+/// Windows invokes Nix in WSL2, optionally selecting [wslDistribution].
+/// Only Windows validates and consumes that raw hook configuration value.
 Future<File> buildWithNix({
   required Uri packageRoot,
   required String target,
   required String fileName,
   required Uri outputDirectory,
   required bool anyXcode,
+  Object? wslDistribution,
 }) async {
+  final destination = File.fromUri(
+    outputDirectory.resolve('$target/$fileName'),
+  );
   if (Platform.isWindows) {
-    throw DnixException(
-      'Building from source needs Nix, which runs on Windows only inside '
-      'WSL2; a Windows Dart process can only use the prebuilt library.',
+    return buildWithWsl(
+      packagePath: packageRoot.toFilePath(),
+      target: target,
+      fileName: fileName,
+      destination: destination,
+      distribution: wslDistribution,
     );
   }
   if (Platform.isMacOS && Abi.current() == Abi.macosX64) {
@@ -29,14 +39,10 @@ Future<File> buildWithNix({
       'longer supports Intel Macs as hosts. Use the prebuilt library.',
     );
   }
-  // The package directory is the flake. Nix reads a git checkout as a git
-  // flake (tracked files, including local modifications, and shallow clones
-  // handled) and anything else as a plain directory; a bare path needs no
-  // URL encoding.
-  final flake = packageRoot.toFilePath().replaceAll(RegExp(r'/+$'), '');
-  final destination = File.fromUri(
-    outputDirectory.resolve('$target/$fileName'),
-  );
+  // Run inside the package so characters such as '#' in its parent path
+  // cannot be interpreted as part of the flake reference. Nix still sees
+  // tracked files in a git checkout, or all files in a plain directory.
+  final packageDirectory = packageRoot.toFilePath();
   destination.parent.createSync(recursive: true);
 
   if (isAppleTarget(target)) {
@@ -44,23 +50,24 @@ Future<File> buildWithNix({
     await runNix(
       [
         'develop',
-        '$flake#apple',
+        '.#apple',
         '--command',
         'dnix-apple-build',
         built.path,
         target,
       ],
       environment: {if (anyXcode) 'DNIX_ANY_XCODE': '1'},
+      workingDirectory: packageDirectory,
     );
     return copyOut(File('${built.path}/$target/$fileName'), destination);
   }
 
   final storePath = await runNix([
     'build',
-    '$flake#$target',
+    '.#$target',
     '--no-link',
     '--print-out-paths',
-  ]);
+  ], workingDirectory: packageDirectory);
   return copyOut(File('${storePath.trim()}/lib/$fileName'), destination);
 }
 

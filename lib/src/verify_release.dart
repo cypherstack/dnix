@@ -30,11 +30,6 @@ Future<int> verifyRelease(List<String> args) async {
 const _platforms = ['linux', 'android', 'windows', 'macos', 'ios'];
 
 Future<int> _verify(String platform) async {
-  if (Platform.isWindows) {
-    throw DnixException(
-      'This needs Nix, which runs on Windows inside WSL2. Run it there.',
-    );
-  }
   final root = DnixConfig.findRoot();
   final config = DnixConfig.load(root);
   final lock = DnixLock.load(root);
